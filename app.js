@@ -2,7 +2,7 @@
 
 const crypto = require("crypto");
 const { NFC, CONNECT_MODE_DIRECT } = require("nfc-pcsc");
-const { DESFIRE_COMMANDS } = require("./desfire.js");
+const { DESFIRE_COMMANDS, DESFIRE_STATUS } = require("./desfire.js");
 
 const nfc = new NFC();
 
@@ -17,13 +17,13 @@ class DesfireCard {
     }
     
     decryptDes(key, data, iv = Buffer.alloc(8).fill(0)) {
-        const decipher = crypto.createDecipheriv('DES-EDE-CBC', key, iv);
+        const decipher = crypto.createDecipheriv("DES-EDE-CBC", key, iv);
         decipher.setAutoPadding(false);
         return Buffer.concat([decipher.update(data), decipher.final()]);
     }
 
     encryptDes(key, data, iv = Buffer.alloc(8).fill(0)) {
-        const decipher = crypto.createCipheriv('DES-EDE-CBC', key, iv);
+        const decipher = crypto.createCipheriv("DES-EDE-CBC", key, iv);
         decipher.setAutoPadding(false);
         return Buffer.concat([decipher.update(data), decipher.final()]);
     }
@@ -37,73 +37,97 @@ class DesfireCard {
     };
     
     wrap(cmd, dataIn) {
-        return [0x90, cmd, 0x00, 0x00, dataIn.length, ...dataIn, 0x00];
+        if (dataIn.length > 0) {
+            return [0x90, cmd, 0x00, 0x00, dataIn.length, ...dataIn, 0x00];
+        } else {
+            return [0x90, cmd, 0x00, 0x00, 0x00];
+        }
     }
     
     async selectApplication(appId) {
         // 1: [0x5A] SelectApplication(appId) [4 bytes] - Selects one specific application for further access
         // DataIn: appId (3 bytes)
-        const res = await this.send(this.wrap(DESFIRE_COMMANDS["SelectApplication"], appId), 'select app');
+        const res = await this.send(this.wrap(DESFIRE_COMMANDS["SelectApplication"], appId), "select app");
 
         // something went wrong
-        if (res.slice(-1)[0] !== 0x00) {
-            throw new Error('failed to select app');
+        if (res.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("failed to select app");
         }
-    };
+    }
     
     async authenticateDes(keyId, key) {
-            // 2: [0x0a] Authenticate(keyId) [2bytes]
-            // DataIn: keyId (1 byte)
-            const res1 = await this.send(this.wrap(DESFIRE_COMMANDS["AuthenticateLegacy"], [keyId]), 'authenticate des');
-            if (res1.slice(-1)[0] !== 0xaf) {
-                throw new Error('failed to authenticate');
-            }
+        // 2: [0x0a] Authenticate(keyId) [2bytes]
+        // DataIn: keyId (1 byte)
+        const res1 = await this.send(this.wrap(DESFIRE_COMMANDS["AuthenticateLegacy"], [keyId]), "authenticate des");
+        if (res1.slice(-1)[0] !== DESFIRE_STATUS["MoreFrames"]) {
+            throw new Error("failed to authenticate");
+        }
 
-            // encrypted RndB from reader
-            // cut out status code (last 2 bytes)
-            const ecRndB = res1.slice(0, -2);
+        // encrypted RndB from reader
+        // cut out status code (last 2 bytes)
+        const ecRndB = res1.slice(0, -2);
 
-            // decrypt it
-            const RndB = this.decryptDes(key, ecRndB);
+        // decrypt it
+        const RndB = this.decryptDes(key, ecRndB);
 
-            // rotate RndB
-            const RndBp = Buffer.concat([RndB.slice(1, 8), RndB.slice(0, 1)]);
+        // rotate RndB
+        const RndBp = Buffer.concat([RndB.slice(1, 8), RndB.slice(0, 1)]);
 
-            // generate a 8 byte Random Number A
-            const RndA = crypto.randomBytes(8);
+        // generate a 8 byte Random Number A
+        const RndA = crypto.randomBytes(8);
 
-            // concat RndA and RndBp
-            const msg = this.encryptDes(key, Buffer.concat([RndA, RndBp]));
+        // concat RndA and RndBp
+        const msg = this.encryptDes(key, Buffer.concat([RndA, RndBp]));
 
-            // send it back to the reader
-            const res2 = await this.send(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], msg), 'set up RndA');
-            if (res2.slice(-1)[0] !== 0x00) {
-                throw new Error('error in step 2 - set up RndA');
-            }
+        // send it back to the reader
+        const res2 = await this.send(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], msg), "set up RndA");
+        if (res2.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("failed to set up RndA");
+        }
 
-            // encrypted RndAp from reader
-            // cut out status code (last 2 bytes)
-            const ecRndAp = res2.slice(0, -2);
+        // encrypted RndAp from reader
+        // cut out status code (last 2 bytes)
+        const ecRndAp = res2.slice(0, -2);
 
-            // decrypt to get rotated value of RndA2
-            const RndAp = this.decryptDes(key, ecRndAp);
+        // decrypt to get rotated value of RndA2
+        const RndAp = this.decryptDes(key, ecRndAp);
 
-            // rotate
-            const RndA2 = Buffer.concat([RndAp.slice(7, 8), RndAp.slice(0, 7)]);
+        // rotate
+        const RndA2 = Buffer.concat([RndAp.slice(7, 8), RndAp.slice(0, 7)]);
 
-            // compare decrypted RndA2 response from reader with our RndA
-            // if it equals authentication process was successful
-            if (!RndA.equals(RndA2)) {
-                throw new Error('failed to match RndA random bytes');
-            }
+        // compare decrypted RndA2 response from reader with our RndA
+        // if it equals authentication process was successful
+        if (!RndA.equals(RndA2)) {
+            throw new Error("failed to match RndA random bytes");
+        }
 
-            return { RndA, RndB };
-        };
+        return { RndA, RndB };
+    }
+    
+    async listApplicationsIds() {
+        let result = await this.send(this.wrap(DESFIRE_COMMANDS["GetApplicationIdentifiers"], []), "get application ids");
+        let appsRaw = Buffer.from(result.slice(0,result.length-2));
+        while (result.slice(-1)[0] === DESFIRE_STATUS["MoreFrames"]) {
+            result = await this.send(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], []), "get application ids (continued)");
+            appsRaw = Buffer.concat([appsRaw, result.slice(0,result.length-2)]);
+        }
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("failed to list application ids");
+        }
+        let appsArray = appsRaw.toJSON().data;
+        let apps = [];
+        for (let index = 0; index < appsArray.length; index += 3) {
+            apps.push(appsArray.slice(index, index+3));
+        }
+        return apps;
+    }
     
     async run() {
         try {
             await this.selectApplication([0x00, 0x00, 0x00]); // Select PICC
 			await this.authenticateDes(0x00, this.default_des_key); // Authenticate using default key
+            let applications = await this.listApplicationsIds();
+            console.log(applications);
         } catch (error) {
             console.error("Desfire error", error);
         }

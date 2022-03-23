@@ -1,9 +1,11 @@
 "use strict";
 
-let commands = {
-    "mcNotAuthenticated": 255,
-    "mcMaxFrameSize": 60, // The maximum total length of a packet that is transfered to / from the card
+const constants = {
+    "NotAuthenticated": 255,
+    "MaxFrameSize": 60, // The maximum total length of a packet that is transfered to / from the card
+};
 
+const commands = {
     // Desfire legacy instructions
     "AuthenticateLegacy": 0x0A,
     "ChangeKeySettings": 0x54,
@@ -38,7 +40,7 @@ let commands = {
     "AbortTransaction": 0xA7,
     "AdditionalFrame": 0xAF, // data did not fit into a frame, another frame will follow
 
-     // Desfire EV1 instructions
+    // Desfire EV1 instructions
     "Ev1AuthenticateIso": 0x1A,
     "Ev1AuthenticateAes": 0xAA,
     "Ev1FreeMem": 0x6E,
@@ -58,4 +60,29 @@ let commands = {
     "ISO7816UpdateBinary": 0xD6
 };
 
-module.exports = {DESFIRE_COMMANDS: commands};
+const status_codes = {
+    "Success": 0x00,
+    "NoChanges": 0x0C,
+    "OutOfMemory": 0x0E,
+    "IllegalCommand": 0x1C,
+    "IntegrityError": 0x1E,
+    "KeyDoesNotExist": 0x40,
+    "WrongCommandLen": 0x7E,
+    "PermissionDenied": 0x9D,
+    "IncorrectParam": 0x9E,
+    "AppNotFound": 0xA0,
+    "AppIntegrityError": 0xA1,
+    "AuthentError": 0xAE,
+    "MoreFrames": 0xAF, // data did not fit into a frame, another frame will follow
+    "LimitExceeded": 0xBE,
+    "CardIntegrityError": 0xC1,
+    "CommandAborted": 0xCA,
+    "CardDisabled": 0xCD,
+    "InvalidApp": 0xCE,
+    "DuplicateAidFiles": 0xDE,
+    "EepromError": 0xEE,
+    "FileNotFound": 0xF0,
+    "FileIntegrityError": 0xF1
+};
+
+module.exports = {DESFIRE_COMMANDS: commands, DESFIRE_STATUS: status_codes, DESFIRE_CONSTANTS: constants};
