@@ -11,7 +11,8 @@ class DesfireCard {
         this._reader = reader;
         this._card = card;
 
-        this.default_des_key = Buffer.from("00000000000000000000000000000000", "hex");
+        this.default_des_key         = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        this.default_aes_key         = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         
         setTimeout(this.run.bind(this), 0);
     }
@@ -23,7 +24,21 @@ class DesfireCard {
     }
 
     encryptDes(key, data, iv = Buffer.alloc(8).fill(0)) {
+        console.log("Encrypt DES", data.length, data, iv);
         const decipher = crypto.createCipheriv("DES-EDE-CBC", key, iv);
+        decipher.setAutoPadding(false);
+        return Buffer.concat([decipher.update(data), decipher.final()]);
+    }
+
+    decryptAes(key, data, iv = Buffer.alloc(16).fill(0)) {
+        const decipher = crypto.createDecipheriv("AES-128-CBC", key, iv);
+        decipher.setAutoPadding(false);
+        return Buffer.concat([decipher.update(data), decipher.final()]);
+    }
+    
+    encryptAes(key, data, iv = Buffer.alloc(16).fill(0)) {
+        console.log("Encrypt AES", data.length, data, iv);
+        const decipher = crypto.createCipheriv("AES-128-CBC", key, iv);
         decipher.setAutoPadding(false);
         return Buffer.concat([decipher.update(data), decipher.final()]);
     }
@@ -71,10 +86,10 @@ class DesfireCard {
         const RndB = this.decryptDes(key, ecRndB);
 
         // rotate RndB
-        const RndBp = Buffer.concat([RndB.slice(1, 8), RndB.slice(0, 1)]);
+        const RndBp = Buffer.concat([RndB.slice(1, RndB.length), RndB.slice(0, 1)]);
 
         // generate a 8 byte Random Number A
-        const RndA = crypto.randomBytes(8);
+        const RndA = crypto.randomBytes(RndB.length);
 
         // concat RndA and RndBp
         const msg = this.encryptDes(key, Buffer.concat([RndA, RndBp]));
@@ -93,7 +108,56 @@ class DesfireCard {
         const RndAp = this.decryptDes(key, ecRndAp);
 
         // rotate
-        const RndA2 = Buffer.concat([RndAp.slice(7, 8), RndAp.slice(0, 7)]);
+        const RndA2 = Buffer.concat([RndAp.slice(RndAp.length - 1, RndAp.length), RndAp.slice(0, RndAp.length - 1)]);
+
+        // compare decrypted RndA2 response from reader with our RndA
+        // if it equals authentication process was successful
+        if (!RndA.equals(RndA2)) {
+            throw new Error("failed to match RndA random bytes");
+        }
+
+        return { RndA, RndB };
+    }
+    
+    async authenticateAes(keyId, key) {
+        // 2: [0x0a] Authenticate(keyId) [2bytes]
+        // DataIn: keyId (1 byte)
+        const res1 = await this.send(this.wrap(DESFIRE_COMMANDS["Ev1AuthenticateAes"], [keyId]), "authenticate aes");
+        if (res1.slice(-1)[0] !== DESFIRE_STATUS["MoreFrames"]) {
+            throw new Error("failed to authenticate");
+        }
+
+        // encrypted RndB from reader
+        // cut out status code (last 2 bytes)
+        const ecRndB = res1.slice(0, -2);
+
+        // decrypt it
+        const RndB = this.decryptAes(key, ecRndB);
+
+        // rotate RndB
+        const RndBp = Buffer.concat([RndB.slice(1, RndB.length), RndB.slice(0, 1)]);
+
+        // generate a 8 byte Random Number A
+        const RndA = crypto.randomBytes(RndB.length);
+
+        // concat RndA and RndBp
+        const msg = this.encryptAes(key, Buffer.concat([RndA, RndBp]));
+
+        // send it back to the reader
+        const res2 = await this.send(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], msg), "set up RndA");
+        if (res2.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("failed to set up RndA");
+        }
+
+        // encrypted RndAp from reader
+        // cut out status code (last 2 bytes)
+        const ecRndAp = res2.slice(0, -2);
+
+        // decrypt to get rotated value of RndA2
+        const RndAp = this.decryptAes(key, ecRndAp);
+
+        // rotate
+        const RndA2 = Buffer.concat([RndAp.slice(RndAp.length - 1, RndAp.length), RndAp.slice(0, RndAp.length - 1)]);
 
         // compare decrypted RndA2 response from reader with our RndA
         // if it equals authentication process was successful
@@ -125,8 +189,10 @@ class DesfireCard {
     async run() {
         try {
             await this.selectApplication([0x00, 0x00, 0x00]); // Select PICC
-			await this.authenticateDes(0x00, this.default_des_key); // Authenticate using default key
+            let desSession = await this.authenticateDes(0x00, this.default_des_key); // Authenticate using default key
             let applications = await this.listApplicationsIds();
+            await this.selectApplication([0x84, 0x19, 0x00]); // Select TkkrLab
+            let aesSession = await this.authenticateAes(0x00, this.default_aes_key); // Authenticate using default key
             console.log(applications);
         } catch (error) {
             console.error("Desfire error", error);
@@ -136,7 +202,8 @@ class DesfireCard {
 
 class NfcReader {
     constructor(reader, onEnd) {
-        this.desfireAtr = Buffer.from([0x3b, 0x81, 0x80, 0x01, 0x80, 0x80]);
+        this.desfireEv2Atr = Buffer.from([0x3b, 0x81, 0x80, 0x01, 0x80, 0x80]);
+        this.desfireEv1Atr = Buffer.from([0x3b, 0x81, 0x80, 0x01, 0x8f, 0x8f]);
         this._reader = reader;
         this._onEnd = onEnd;
         this._reader.autoProcessing = false;
@@ -155,11 +222,11 @@ class NfcReader {
     };
 
     async _onCard(card) {
-        if (Buffer.compare(card.atr, this.desfireAtr) === 0) {
+        if ((Buffer.compare(card.atr, this.desfireEv1Atr) === 0) || (Buffer.compare(card.atr, this.desfireEv2Atr) === 0)) {
             this.card = new DesfireCard(this._reader, card);
             console.log(this._reader.name + ": Desfire card attached");
         } else {
-            console.log(this._reader.name + ": unsupported card attached");
+            console.log(this._reader.name + ": unsupported card attached", card.atr);
         }
     }
     
