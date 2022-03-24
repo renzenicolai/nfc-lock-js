@@ -6,6 +6,33 @@ const { DESFIRE_COMMANDS, DESFIRE_STATUS } = require("./desfire.js");
 
 const nfc = new NFC();
 
+class DesfireCardVersion {
+    constructor(buffer) {
+        if (buffer.length != 28) {
+            throw new Error("Expected exactly 28 bytes");
+        }
+        this.vendorIdentifier         = buffer.readUint8(0);
+        this.hardwareType             = buffer.readUint8(0);
+        this.hardwareSubType          = buffer.readUint8(0);
+        this.hardwareMajorVersion     = buffer.readUint8(0);
+        this.HardwareMinorVersion     = buffer.readUint8(0);
+        this.hardwareStorageSize      = buffer.readUint8(0);
+        this.hardwareProtocol         = buffer.readUint8(0);
+        this.softwareVendorIdentifier = buffer.readUint8(0);
+        this.softwareType             = buffer.readUint8(0);
+        this.softwareSubType          = buffer.readUint8(0);
+        this.softwareMajorVersion     = buffer.readUint8(0);
+        this.softwareMinorVersion     = buffer.readUint8(0);
+        this.softwareStorageSize      = buffer.readUint8(0);
+        this.softwareProtocol         = buffer.readUint8(0);
+        this.identifier               = buffer.readUint8(0);
+        this.batchNumber              = buffer.readUint8(0);
+        this.productionWeek           = buffer.readUint8(0);
+        this.productionYear           = buffer.readUint8(0);
+        
+    }
+}
+
 class DesfireCard {
     constructor(reader, card) {
         this._reader = reader;
@@ -141,10 +168,10 @@ class DesfireCard {
         const RndA = crypto.randomBytes(RndB.length);
 
         // concat RndA and RndBp
-        const msg = this.encryptAes(key, Buffer.concat([RndA, RndBp]));
+        const ciphertext = this.encryptAes(key, Buffer.concat([RndA, RndBp]), ecRndB);
 
         // send it back to the reader
-        const res2 = await this.send(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], msg), "set up RndA");
+        const res2 = await this.send(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], ciphertext), "set up RndA");
         if (res2.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
             throw new Error("failed to set up RndA");
         }
@@ -154,7 +181,7 @@ class DesfireCard {
         const ecRndAp = res2.slice(0, -2);
 
         // decrypt to get rotated value of RndA2
-        const RndAp = this.decryptAes(key, ecRndAp);
+        const RndAp = this.decryptAes(key, ecRndAp, ciphertext.slice(-16));
 
         // rotate
         const RndA2 = Buffer.concat([RndAp.slice(RndAp.length - 1, RndAp.length), RndAp.slice(0, RndAp.length - 1)]);
@@ -167,6 +194,47 @@ class DesfireCard {
 
         return { RndA, RndB };
     }
+    
+    async readData(fileId) {
+        // 3: [0xBD] ReadData(FileNo,Offset,Length) [8bytes] - Reads data from Standard Data Files or Backup Data Files
+        const res = await this.send(this.wrap(DESFIRE_COMMANDS["ReadData"], [fileId, 0,0,0, 16,0,0]), 'read file', 255);
+        // something went wrong
+        if (res.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error('read file failed');
+        }
+        console.log('File contents', res); // Contains garbage at the end
+    };
+    
+    async readCardUid() {
+        const res = await this.send(this.wrap(DESFIRE_COMMANDS["Ev1GetCardUid"], []), 'read card uid', 255);
+        // something went wrong
+        if (res.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error('read file failed');
+        }
+        console.log('UID', res); // Needs to be decrypted
+    };
+    
+    async formatCard() {
+        const res = await this.send(this.wrap(DESFIRE_COMMANDS["FormatPicc"], []), 'format', 255);
+        // something went wrong
+        if (res.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error('format failed');
+        }
+    };
+    
+    async getCardVersion() {
+        let result = await this.send(this.wrap(DESFIRE_COMMANDS["GetVersion"], []), 'get version', 255);
+        let data = Buffer.from(result.slice(0,result.length-2));
+        while (result.slice(-1)[0] === DESFIRE_STATUS["MoreFrames"]) {
+            result = await this.send(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], []), "get version (continued)");
+            data = Buffer.concat([data, result.slice(0,result.length-2)]);
+        }
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("failed to get card version");
+        }
+        
+        console.log("Version", data);
+    };
     
     async listApplicationsIds() {
         let result = await this.send(this.wrap(DESFIRE_COMMANDS["GetApplicationIdentifiers"], []), "get application ids");
@@ -190,10 +258,12 @@ class DesfireCard {
         try {
             await this.selectApplication([0x00, 0x00, 0x00]); // Select PICC
             let desSession = await this.authenticateDes(0x00, this.default_des_key); // Authenticate using default key
-            let applications = await this.listApplicationsIds();
+            await this.getCardVersion();
+            /*let applications = await this.listApplicationsIds();
             await this.selectApplication([0x84, 0x19, 0x00]); // Select TkkrLab
             let aesSession = await this.authenticateAes(0x00, this.default_aes_key); // Authenticate using default key
-            console.log(applications);
+            await this.readData(0);
+            await this.readCardUid();*/
         } catch (error) {
             console.error("Desfire error", error);
         }
