@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const crc32 = require("buffer-crc32");
 const { NFC, CONNECT_MODE_DIRECT } = require("nfc-pcsc");
 const { DESFIRE_COMMANDS, DESFIRE_STATUS } = require("./desfire.js");
 
@@ -11,25 +12,78 @@ class DesfireCardVersion {
         if (buffer.length != 28) {
             throw new Error("Expected exactly 28 bytes");
         }
-        this.vendorIdentifier         = buffer.readUint8(0);
-        this.hardwareType             = buffer.readUint8(0);
-        this.hardwareSubType          = buffer.readUint8(0);
-        this.hardwareMajorVersion     = buffer.readUint8(0);
-        this.HardwareMinorVersion     = buffer.readUint8(0);
-        this.hardwareStorageSize      = buffer.readUint8(0);
-        this.hardwareProtocol         = buffer.readUint8(0);
-        this.softwareVendorIdentifier = buffer.readUint8(0);
-        this.softwareType             = buffer.readUint8(0);
-        this.softwareSubType          = buffer.readUint8(0);
-        this.softwareMajorVersion     = buffer.readUint8(0);
-        this.softwareMinorVersion     = buffer.readUint8(0);
-        this.softwareStorageSize      = buffer.readUint8(0);
-        this.softwareProtocol         = buffer.readUint8(0);
-        this.identifier               = buffer.readUint8(0);
-        this.batchNumber              = buffer.readUint8(0);
-        this.productionWeek           = buffer.readUint8(0);
-        this.productionYear           = buffer.readUint8(0);
+        this.vendorId             = buffer.readUint8(0);
+        this.hardwareType         = buffer.readUint8(1);
+        this.hardwareSubType      = buffer.readUint8(2);
+        this.hardwareMajorVersion = buffer.readUint8(3);
+        this.HardwareMinorVersion = buffer.readUint8(4);
+        this.hardwareStorageSize  = buffer.readUint8(5);
+        this.hardwareProtocol     = buffer.readUint8(6);
+        this.softwareVendorId     = buffer.readUint8(7);
+        this.softwareType         = buffer.readUint8(8);
+        this.softwareSubType      = buffer.readUint8(9);
+        this.softwareMajorVersion = buffer.readUint8(10);
+        this.softwareMinorVersion = buffer.readUint8(11);
+        this.softwareStorageSize  = buffer.readUint8(12);
+        this.softwareProtocol     = buffer.readUint8(13);
+        this.uid                  = buffer.slice(14,21).toJSON().data;;
+        this.batchNumber          = buffer.slice(21,26).toJSON().data;;
+        this.productionWeek       = buffer.readUint8(26);
+        this.productionYear       = buffer.readUint8(27);
+    }
+    
+    print() {
+        console.log("Hardware version: " + this.hardwareMajorVersion + "." + this.HardwareMinorVersion);
+        console.log("Software version: " + this.softwareMajorVersion + "." + this.softwareMinorVersion);
+        console.log("Storage capacity: " + (1 << (this.hardwareStorageSize / 2)));
+        console.log("Production date:  week " + this.productionWeek.toString(16) + " of 20" + ((this.productionYear < 0x10) ? "0" : "") + this.productionYear.toString(16));
+        let batchNumberStringArray = [];
+        for (let index = 0; index < this.batchNumber.length; index++) {
+            batchNumberStringArray.push(((this.batchNumber[index] < 0x10) ? "0" : "") + this.batchNumber[index].toString(16));
+        }
+        console.log("Batch number:     " + batchNumberStringArray.join(""));
+        let uidStringArray = [];
+        for (let index = 0; index < this.uid.length; index++) {
+            uidStringArray.push(((this.uid[index] < 0x10) ? "0" : "") + this.uid[index].toString(16));
+        }
+        console.log("Unique ID:        " + uidStringArray.join(""));
         
+    }
+}
+
+class DesfireKeySettings {
+    constructor(buffer = Buffer.from([0x0F, 0x00])) {
+        let settings = buffer.readUint8(0);
+        this.allowChangeMk              = Boolean(settings & 0x01);
+        this.allowListingWithoutMk      = Boolean(settings & 0x02);
+        this.allowCreateDeleteWithoutMk = Boolean(settings & 0x04);
+        this.allowChangeConfiguration   = Boolean(settings & 0x08);
+        this.allowChangeWithKey         = (settings & 0xF0) >> 4; // 0x0 is master key, 0xE is target key, 0xF is frozen
+        this.keyCount = buffer.readUint8(1) & 0x0F;
+        let _keyType = buffer.readUint8(1) & 0xF0;
+        this.keyType = "invalid";
+        if (_keyType === 0x00) {
+            this.keyType = "des";
+        } else if (_keyType == 0x40) {
+            this.keyType = "3des";
+        } else if (_keyType == 0x80) {
+            this.keyType = "aes";
+        }
+    }
+    
+    getBuffer() {
+        let _keyType = null;
+        if (this.keyType === "des") {
+            _keyType = 0x00;
+        } else if (this.keyType === "3des") {
+            _keyType = 0x40;
+        } else if (this.keyType === "aes") {
+            _keyType = 0x80;
+        } else {
+            throw new Error("key type invalid");
+        }
+        let settings = (this.allowChangeWithKey << 4) | (this.allowChangeMk ? 1 : 0) | (this.allowListingWithoutMk ? 2 : 0) | (this.allowCreateDeleteWithoutMk ? 4 : 0) | (this.allowChangeConfiguration ? 8 : 0);
+        return Buffer.from([settings, this.keyCount + _keyType]);
     }
 }
 
@@ -40,6 +94,11 @@ class DesfireCard {
 
         this.default_des_key         = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         this.default_aes_key         = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+        this.sessionKey = null;
+        this.iv = null;
+        this.keyType = null;
+        this.keyId = null;
         
         setTimeout(this.run.bind(this), 0);
     }
@@ -51,7 +110,6 @@ class DesfireCard {
     }
 
     encryptDes(key, data, iv = Buffer.alloc(8).fill(0)) {
-        console.log("Encrypt DES", data.length, data, iv);
         const decipher = crypto.createCipheriv("DES-EDE-CBC", key, iv);
         decipher.setAutoPadding(false);
         return Buffer.concat([decipher.update(data), decipher.final()]);
@@ -64,7 +122,6 @@ class DesfireCard {
     }
     
     encryptAes(key, data, iv = Buffer.alloc(16).fill(0)) {
-        console.log("Encrypt AES", data.length, data, iv);
         const decipher = crypto.createCipheriv("AES-128-CBC", key, iv);
         decipher.setAutoPadding(false);
         return Buffer.concat([decipher.update(data), decipher.final()]);
@@ -72,9 +129,9 @@ class DesfireCard {
     
     async send(cmd, info = "unknown", responseMaxLength = 40) {
         const buff = Buffer.from(cmd);
-        console.log(this._reader.name + " " + info + ": sending ", buff);
+        //console.log(this._reader.name + " " + info + ": sending ", buff);
         const data = await this._reader.transmit(buff, responseMaxLength);
-        console.log(this._reader.name + " " + info + ": received ", data);
+        //console.log(this._reader.name + " " + info + ": received ", data);
         return data;
     };
     
@@ -83,17 +140,6 @@ class DesfireCard {
             return [0x90, cmd, 0x00, 0x00, dataIn.length, ...dataIn, 0x00];
         } else {
             return [0x90, cmd, 0x00, 0x00, 0x00];
-        }
-    }
-    
-    async selectApplication(appId) {
-        // 1: [0x5A] SelectApplication(appId) [4 bytes] - Selects one specific application for further access
-        // DataIn: appId (3 bytes)
-        const res = await this.send(this.wrap(DESFIRE_COMMANDS["SelectApplication"], appId), "select app");
-
-        // something went wrong
-        if (res.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
-            throw new Error("failed to select app");
         }
     }
     
@@ -191,39 +237,77 @@ class DesfireCard {
         if (!RndA.equals(RndA2)) {
             throw new Error("failed to match RndA random bytes");
         }
-
-        return { RndA, RndB };
+        
+        this.sessionKey = Buffer.concat([RndA.slice(0,4), RndB.slice(0,4), RndA.slice(12, 16), RndB.slice(12, 16)]);
+        this.iv = Buffer.alloc(16).fill(0);
+        this.keyType = "aes";
+        this.keyId = keyId;
     }
     
     async readData(fileId) {
         // 3: [0xBD] ReadData(FileNo,Offset,Length) [8bytes] - Reads data from Standard Data Files or Backup Data Files
-        const res = await this.send(this.wrap(DESFIRE_COMMANDS["ReadData"], [fileId, 0,0,0, 16,0,0]), 'read file', 255);
+        const res = await this.send(this.wrap(DESFIRE_COMMANDS["ReadData"], [fileId, 0,0,0, 16,0,0]), "read file", 255);
         // something went wrong
         if (res.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
-            throw new Error('read file failed');
+            throw new Error("read file failed");
         }
-        console.log('File contents', res); // Contains garbage at the end
+        console.log("File contents", res); // Contains garbage at the end
     };
+
+    async decryptResponse(ciphertext) {
+        let plaintext = this.decryptAes(this.sessionKey, ciphertext, this.iv);
+        if (this.keyType === "aes") {
+            this.iv = ciphertext.slice(-16);
+        }
+        return plaintext;
+    }
     
     async readCardUid() {
-        const res = await this.send(this.wrap(DESFIRE_COMMANDS["Ev1GetCardUid"], []), 'read card uid', 255);
-        // something went wrong
-        if (res.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
-            throw new Error('read file failed');
+        // Not functional yet!
+        const result = await this.send(this.wrap(DESFIRE_COMMANDS["Ev1GetCardUid"], []), "read card uid", 255);
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("read file failed");
         }
-        console.log('UID', res); // Needs to be decrypted
+        return this.decryptResponse(result.slice(0, result.length - 2));
     };
     
     async formatCard() {
-        const res = await this.send(this.wrap(DESFIRE_COMMANDS["FormatPicc"], []), 'format', 255);
-        // something went wrong
-        if (res.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
-            throw new Error('format failed');
+        const result = await this.send(this.wrap(DESFIRE_COMMANDS["FormatPicc"], []), "format", 255);
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("format failed");
         }
     };
     
+    async getFreeMemory() {
+        const result = await this.send(this.wrap(DESFIRE_COMMANDS["Ev1FreeMem"], []), "get free", 255);
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("get free memory failed");
+        }
+        return Buffer.concat([result.slice(0,3), Buffer.from([0x00])]).readUint32LE();
+    };
+    
+    async getKeyVersion(keyNo) {
+        const result = await this.send(this.wrap(DESFIRE_COMMANDS["GetKeyVersion"], [keyNo]), "get key version", 255);
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("get key version failed");
+        }
+        return result.readUint8(0);
+    }
+    
+    async getKeySettings() {
+        const result = await this.send(this.wrap(DESFIRE_COMMANDS["GetKeySettings"], []), "get key settings", 255);
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("get key settings failed");
+        }
+        return new DesfireKeySettings(result.slice(0,-2));
+    }
+    
+    async changeKeySettings(newSettings) {
+        throw new Error("not implemented");
+    }
+    
     async getCardVersion() {
-        let result = await this.send(this.wrap(DESFIRE_COMMANDS["GetVersion"], []), 'get version', 255);
+        let result = await this.send(this.wrap(DESFIRE_COMMANDS["GetVersion"], []), "get version", 255);
         let data = Buffer.from(result.slice(0,result.length-2));
         while (result.slice(-1)[0] === DESFIRE_STATUS["MoreFrames"]) {
             result = await this.send(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], []), "get version (continued)");
@@ -232,11 +316,10 @@ class DesfireCard {
         if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
             throw new Error("failed to get card version");
         }
-        
-        console.log("Version", data);
+        return new DesfireCardVersion(data);
     };
     
-    async listApplicationsIds() {
+    async getApplicationsIds() {
         let result = await this.send(this.wrap(DESFIRE_COMMANDS["GetApplicationIdentifiers"], []), "get application ids");
         let appsRaw = Buffer.from(result.slice(0,result.length-2));
         while (result.slice(-1)[0] === DESFIRE_STATUS["MoreFrames"]) {
@@ -254,16 +337,57 @@ class DesfireCard {
         return apps;
     }
     
+    async createApplication(appId, keySettings, keyCount, keyType) {
+        // Not functional yet!
+        if (typeof appId === "number") {
+            let newAppId = Buffer.from([0,0,0,0]);
+            newAppId.writeUint32LE(appId);
+            appId = newAppId.slice(0,3);
+        }
+        const result = await this.send(this.wrap(DESFIRE_COMMANDS["createApplication"], [appId, keySettings.getBuffer(), keyCount | keyType]), "create application", 255);
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            console.log(result);
+            throw new Error("create application failed");
+        }
+    }
+    
+    async selectApplication(appId) {
+        if (typeof appId === "number") {
+            let newAppId = Buffer.from([0,0,0,0]);
+            newAppId.writeUint32LE(appId);
+            appId = newAppId.slice(0,3);
+        }
+        const result = await this.send(this.wrap(DESFIRE_COMMANDS["SelectApplication"], appId), "select app");
+        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+            throw new Error("failed to select app");
+        }
+    }
+    
     async run() {
         try {
-            await this.selectApplication([0x00, 0x00, 0x00]); // Select PICC
+            await this.selectApplication(0x000000); // Select PICC
+            console.log(await this.getKeySettings());
             let desSession = await this.authenticateDes(0x00, this.default_des_key); // Authenticate using default key
-            await this.getCardVersion();
-            /*let applications = await this.listApplicationsIds();
-            await this.selectApplication([0x84, 0x19, 0x00]); // Select TkkrLab
-            let aesSession = await this.authenticateAes(0x00, this.default_aes_key); // Authenticate using default key
-            await this.readData(0);
-            await this.readCardUid();*/
+            let version = await this.getCardVersion();
+            version.print();
+            console.log("Free memory:     ", await this.getFreeMemory(), "bytes");
+            let applications = await this.getApplicationsIds();
+            let applicationsString = "";
+            for (let index = 0; index < applications.length; index++) {
+                let appId = Buffer.concat([Buffer.from(applications[index]), Buffer.from([0x00])]).readUint32LE();
+                applicationsString += appId.toString(16).padStart(6,"0") + " ";
+            }
+            console.log("Applications:    ", applicationsString);
+            /*await this.selectApplication(0x001984); // Select TkkrLab
+            await this.authenticateAes(0x00, this.default_aes_key);
+            console.log(await this.getKeySettings());*/
+            
+            let keySettings = new DesfireKeySettings();
+            this.createApplication(0x001234, keySettings, 1, 0x80);
+            
+            //let realUid = await this.readCardUid();
+            //console.log("Real UID:", realUid);
+            //await this.readData(0);
         } catch (error) {
             console.error("Desfire error", error);
         }
@@ -294,7 +418,7 @@ class NfcReader {
     async _onCard(card) {
         if ((Buffer.compare(card.atr, this.desfireEv1Atr) === 0) || (Buffer.compare(card.atr, this.desfireEv2Atr) === 0)) {
             this.card = new DesfireCard(this._reader, card);
-            console.log(this._reader.name + ": Desfire card attached");
+            //console.log(this._reader.name + ": Desfire card attached");
         } else {
             console.log(this._reader.name + ": unsupported card attached", card.atr);
         }
