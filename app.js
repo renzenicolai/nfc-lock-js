@@ -30,16 +30,22 @@ async function exampleFunction(desfire) {
         //let keySettings = new DesfireKeySettings();
         //desfire.createApplication(0x001234, 0x0F, 1, 0x80);
         
-        console.log(" > Select 1984 application");
-        await desfire.selectApplication(0x001984); // Select TkkrLab
-        console.log(" > Authenticate to 1984 application with default AES key");
-        await desfire.authenticateAes(0x00, desfire.default_aes_key);
-        //console.log(await desfire.getKeySettings());
+        // proceed if contains 1984
+        if(applicationsString.indexOf('001984') !== -1) {
+            console.log(" > Select 1984 application");
+            await desfire.selectApplication(0x001984); // Select TkkrLab
+            console.log(" > Authenticate to 1984 application with default AES key");
+            await desfire.authenticateAes(0x00, desfire.default_aes_key);
+            //console.log(await desfire.getKeySettings());
         
-        //let realUid = await desfire.readCardUid();
-        //console.log("Real UID:", realUid);
-        console.log(" > Read file data");
-        await desfire.readFileData(0, 0, 8);
+            //let realUid = await desfire.readCardUid();
+            //console.log("Real UID:", realUid);
+            console.log(" > Read file data");
+            await desfire.readFileData(0, 0, 8); 
+        } else {
+            console.log(" > 1984 application not present on card");
+        }
+
         //await desfire.formatCard();
         //console.log("Done, card formatted!");
     } catch (error) {
