@@ -6,18 +6,23 @@ const DESFIRE_CONSTANTS = {
 };
 
 const DESFIRE_COMMANDS = {
-    // Desfire legacy instructions
+    // --- Desfire ---
+    // Security related commands
     "AuthenticateLegacy": 0x0A,
     "ChangeKeySettings": 0x54,
     "GetKeySettings": 0x45,
     "ChangeKey": 0xC4,
     "GetKeyVersion": 0x64,
+
+    // PICC level commands
     "CreateApplication": 0xCA,
     "DeleteApplication": 0xDA,
     "GetApplicationIdentifiers": 0x6A,
     "SelectApplication": 0x5A,
     "FormatPicc": 0xFC,
     "GetVersion": 0x60,
+
+    // Application level commands
     "GetFileIdentifiers": 0x6F,
     "GetFileSettings": 0xF5,
     "ChangeFileSettings": 0x5F,
@@ -27,6 +32,8 @@ const DESFIRE_COMMANDS = {
     "CreateLinearRecordFile": 0xC1,
     "CreateCyclicRecordFile": 0xC0,
     "DeleteFile": 0xDF,
+
+    // Data manipulation commands
     "ReadData": 0xBD,
     "WriteData": 0x3D,
     "GetValue": 0x6C,
@@ -38,6 +45,8 @@ const DESFIRE_COMMANDS = {
     "ClearRecordFile": 0xEB,
     "CommitTransaction": 0xC7,
     "AbortTransaction": 0xA7,
+
+    // Other
     "AdditionalFrame": 0xAF, // data did not fit into a frame, another frame will follow
 
     // Desfire EV1 instructions
