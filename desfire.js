@@ -139,7 +139,7 @@ class DesfireBase {
     }
 };
 
-class Key extends DesfireBase {
+class DesfireKey extends DesfireBase {
     constructor(keyId, key) {
         super();
         if (Array.isArray(key)) {
@@ -148,8 +148,9 @@ class Key extends DesfireBase {
         if (!Buffer.isBuffer(key)) {
             throw new Error("expected key to be a buffer or array");
         }
-        this.key = key;
-        this.keyId = keyId;
+        this.authenticationKey = key;
+        this.authenticationkeyIdentifier = keyId;
+
         this.keySize = key.length;
         this.blockSize = 8;
 
@@ -158,7 +159,7 @@ class Key extends DesfireBase {
 
         this.sessionKey = null;
         this.sessionIv = null;
-        
+
         this.cmac1 = null;
         this.cmac2 = null;
     }
@@ -178,14 +179,22 @@ class Key extends DesfireBase {
         buffer[buffer.length - 1] = buffer[buffer.length - 1] << 1;
     }
     
+    clearIv(session) {
+        if (session) {
+            this.sessionIv = Buffer.alloc(this.blockSize).fill(0);
+        } else {
+            this.authenticationIv = Buffer.alloc(this.blockSize).fill(0);
+        }
+    }
+
     generateCmacSubKeys() {
+        this.clearIv(true);
         let R = (this.blockSize == 8) ? 0x1B : 0x87;
         let data = Buffer.alloc(this.blockSize).fill(0);
-        this.sessionIv = Buffer.alloc(this.blockSize).fill(0);
         this.cmac1 = Buffer.alloc(this.blockSize);
         this.cmac2 = Buffer.alloc(this.blockSize);
 
-        data = this.encryptCBC(data);
+        data = this.encrypt(data, true);
 
         data.copy(this.cmac1);
         this.bitShiftLeft(this.cmac1);
@@ -198,27 +207,15 @@ class Key extends DesfireBase {
         if (this.cmac1[0] & 0x80) {
             this.cmac2[this.cmac2.length - 1] ^= R;
         }
-        
-        this.sessionIv = Buffer.alloc(this.blockSize).fill(0);
+
+        this.clearIv(true);
     }
-    
-    decryptCBC(data) {
-        let result = this.decrypt(data, this.sessionIv);
-        this.sessionIv = data.slice(-1 * this.blockSize);
-        return result;
-    }
-    
-    encryptCBC(data) {
-        let result = this.encrypt(data, this.sessionIv);
-        this.sessionIv = result.slice(-1 * this.blockSize);
-        return result;
-    }
-    
-    decrypt() {
+
+    decrypt(data, session) {
         throw new Error("not implemented");
     }
     
-    encrypt() {
+    encrypt(data, session) {
         throw new Error("not implemented");
     }
     
@@ -227,7 +224,7 @@ class Key extends DesfireBase {
     }
 }
 
-class KeyDes extends Key {
+class DesfireKeyDes extends DesfireKey {
     constructor(keyId, key) {
         super(keyId, key);
         if (this.keySize !== 16) {
@@ -236,46 +233,47 @@ class KeyDes extends Key {
         this.blockSize = 8;
     }
     
-    decrypt(data, iv = Buffer.alloc(8).fill(0)) {
-        const decipher = crypto.createDecipheriv("DES-EDE-CBC", this.key, iv);
+    decrypt(data, session) {
+        const decipher = crypto.createDecipheriv("DES-EDE-CBC", session ? this.sessionKey : this.authenticationKey, Buffer.alloc(8).fill(0));
         decipher.setAutoPadding(false);
         return Buffer.concat([decipher.update(data), decipher.final()]);
     }
 
-    encrypt(data, iv = Buffer.alloc(8).fill(0)) {
-        const decipher = crypto.createCipheriv("DES-EDE-CBC", this.key, iv);
+    encrypt(data, session) {
+        const decipher = crypto.createCipheriv("DES-EDE-CBC", session ? this.sessionKey : this.authenticationKey, Buffer.alloc(8).fill(0));
         decipher.setAutoPadding(false);
         return Buffer.concat([decipher.update(data), decipher.final()]);
     }
     
     async authenticate(card) {
+        this.clearIv(false);
         let [data, returnCode] = await card.executeTransaction(card.wrap(this.constants.commands["AuthenticateLegacy"], [this.keyId]));
         if (returnCode !== this.constants.status.moreFrames) {
             throw new Error("failed to authenticate");
         }
         const random_b_encrypted = data; // encrypted random_b from reader
-        this.random_b = this.decrypt(random_b_encrypted);     
+        this.random_b = this.decrypt(random_b_encrypted, false);
         const random_b_rotated = this.rotateLeft(this.random_b);
         this.random_a = crypto.randomBytes(this.random_b.length);
-        const ciphertext = this.encrypt(Buffer.concat([this.random_a, random_b_rotated]));
+        const ciphertext = this.encrypt(Buffer.concat([this.random_a, random_b_rotated]), false);
         [data, returnCode] = await card.executeTransaction(card.wrap(this.constants.commands["AdditionalFrame"], ciphertext));
         if (returnCode !== this.constants.status.success) {
             throw new Error("failed to set up random_a");
         }
         const random_a2_encrypted_rotated = data;
-        const random_a2_rotated = this.decrypt(random_a2_encrypted_rotated); // decrypt to get rotated value of random_a2
+        const random_a2_rotated = this.decrypt(random_a2_encrypted_rotated, false); // decrypt to get rotated value of random_a2
         const random_a2 =this.rotateRight(random_a2_rotated);
         if (!this.random_a.equals(random_a2)) { // compare decrypted random_a2 response from reader with our random_a if it equals authentication process was successful
             throw new Error("failed to match random_a random bytes");
         }
         
-        this.sessionKey = Buffer.concat([this.random_a.slice(0,4), this.random_b.slice(0,4)]);
-        this.sessionIv = Buffer.alloc(8).fill(0);
+        this.sessionKey = Buffer.concat([this.random_a.slice(0,4), this.random_b.slice(0,4), this.random_a.slice(0,4), this.random_b.slice(0,4)]);
+        this.clearIv(true);
         this.generateCmacSubKeys();
     }
 }
 
-class KeyAes extends Key {
+class DesfireKeyAes extends DesfireKey {
     constructor(keyId, key) {
         super(keyId, key);
         if (this.keySize !== 16) {
@@ -283,42 +281,57 @@ class KeyAes extends Key {
         }
         this.blockSize = 16;
     }
-    
-    decrypt(data, iv = Buffer.alloc(16).fill(0)) {
-        const decipher = crypto.createDecipheriv("AES-128-CBC", this.key, iv);
+
+    decrypt(data, session) {
+        //if (session) console.log("AES D");
+        const decipher = crypto.createDecipheriv("AES-128-CBC", session ? this.sessionKey : this.authenticationKey, session ? this.sessionIv : this.authenticationIv);
         decipher.setAutoPadding(false);
-        return Buffer.concat([decipher.update(data), decipher.final()]);
+        let result = Buffer.concat([decipher.update(data), decipher.final()]);
+        if (session) {
+            this.sessionIv = data.slice(-1 * this.blockSize);
+        } else {
+            this.authenticationIv = data.slice(-1 * this.blockSize);
+        }
+        return result;
     }
     
-    encrypt(data, iv = Buffer.alloc(16).fill(0)) {
-        const decipher = crypto.createCipheriv("AES-128-CBC", this.key, iv);
-        decipher.setAutoPadding(false);
-        return Buffer.concat([decipher.update(data), decipher.final()]);
+    encrypt(data, session) {
+        //if (session) console.log("AES E", this.sessionIv);
+        const cipher = crypto.createCipheriv("AES-128-CBC", session ? this.sessionKey : this.authenticationKey, session ? this.sessionIv : this.authenticationIv);
+        cipher.setAutoPadding(false);
+        let result = Buffer.concat([cipher.update(data), cipher.final()]);
+        if (session) {
+            this.sessionIv = result.slice(-1 * this.blockSize);
+        } else {
+            this.authenticationIv = result.slice(-1 * this.blockSize);
+        }
+        return result;
     }
     
     async authenticate(card) {
+        this.clearIv(false);
         let [data, returnCode] = await card.executeTransaction(card.wrap(this.constants.commands["Ev1AuthenticateAes"], [this.keyId]));
         if (returnCode !== this.constants.status.moreFrames) {
             throw new Error("failed to authenticate");
         }
         const random_b_encrypted = data; // encrypted random_b from reader
-        this.random_b = this.decrypt(random_b_encrypted);
+        this.random_b = this.decrypt(random_b_encrypted, false);
         const random_b_rotated = this.rotateLeft(this.random_b);
         this.random_a = crypto.randomBytes(this.random_b.length);
-        const ciphertext = this.encrypt(Buffer.concat([this.random_a, random_b_rotated]), random_b_encrypted);
+        const ciphertext = this.encrypt(Buffer.concat([this.random_a, random_b_rotated]), false);
         [data, returnCode] = await card.executeTransaction(card.wrap(this.constants.commands["AdditionalFrame"], ciphertext));
         if (returnCode !== this.constants.status.success) {
             throw new Error("failed to set up random_a");
         }
         const random_a_encrypted_rotated = data; // encrypted random a from reader
-        const random_a_rotated = this.decrypt(random_a_encrypted_rotated, ciphertext.slice(-16)); // decrypt to get rotated value of random_a2
+        const random_a_rotated = this.decrypt(random_a_encrypted_rotated, false); // decrypt to get rotated value of random_a2
         const random_a2 = this.rotateRight(random_a_rotated);
         if (!this.random_a.equals(random_a2)) { // compare decrypted random_a2 response from reader with our random_a if it equals authentication process was successful
             throw new Error("failed to match random_a random bytes");
         }
         
         this.sessionKey = Buffer.concat([this.random_a.slice(0,4), this.random_b.slice(0,4), this.random_a.slice(12, 16), this.random_b.slice(12, 16)]);
-        this.sessionIv = Buffer.alloc(16).fill(0);
+        this.clearIv(true);
         this.generateCmacSubKeys();
     }
     
@@ -376,9 +389,9 @@ class DesfireCardVersion extends DesfireBase {
     }
 }
 
-class DesfireKeySettings extends DesfireBase {
+class DesfireKeySettings {
     constructor(buffer = Buffer.from([0x0F, 0x00])) {
-        super();
+        //super();
         let settings = buffer.readUint8(0);
         this.allowChangeMk              = Boolean(settings & 0x01);
         this.allowListingWithoutMk      = Boolean(settings & 0x02);
@@ -433,32 +446,35 @@ class DesfireCard extends DesfireBase {
     }
 
     async executeTransactionRaw(packet, responseMaxLength = 40) {
+        console.log("OLD TRANSACTION RAW");
         return this._reader.transmit(Buffer.from(packet), responseMaxLength);
     };
 
     async executeTransaction(packet, responseMaxLength = 40) {
+        console.log("OLD TRANSACTION");
         let raw = await this._reader.transmit(Buffer.from(packet), responseMaxLength);
         let returnCode = raw.slice(-1)[0];
         let data = raw.slice(0, -2);
         return [data, returnCode];
     }
     
-    async communicate(cmd, data, encrypted = False, useTxCmac = False) {
+    async communicate(cmd, data, encrypted = False, useCmac = False) {
         console.log("Communicate: ", cmd.toString(16), data);
-        if ((encrypted || useTxCmac) && (this.key === null)) {
+        if ((encrypted || useCmac) && (this.key === null)) {
             throw Error("Not authenticated");
         }
         
-        let txData = Buffer.from([cmd, ...data]);
-        console.log("IV is ", this.key.sessionIv);
-        let txCmac = await this.calculateCmac(txData);
-        console.log("TX CMAC", txData, " = ", txCmac);
+        if (useCmac) {
+            let txData = Buffer.from([cmd, ...data]);
+            let txCmac = await this.calculateCmac(txData);
+            //console.log("TX CMAC", txData, " = ", txCmac);
+        }
 
         let packet = this.wrap(cmd, data);
         
         let raw = await this._reader.transmit(Buffer.from(packet), 40);
         
-        console.log("Raw response: ", raw, "#", raw.length);
+        //console.log("Raw response: ", raw, "#", raw.length);
         
         if (raw[raw.length - 2] !== 0x91) {
             throw Error("Invalid response");
@@ -467,19 +483,20 @@ class DesfireCard extends DesfireBase {
         let returnCode = raw.slice(-1)[0];
         raw = raw.slice(0,-2);
         
-        if (useTxCmac) {
+        if (useCmac) {
             let cmac = raw.slice(-8);
             raw = raw.slice(0, -8);
-            console.log("Response: Status ", returnCode, "CMAC: ", cmac, " Data: ", raw, "#", raw.length);
-            
+            //console.log("Response: Status ", returnCode, "CMAC: ", cmac, " Data: ", raw, "#", raw.length);
             let inputForCmacCalc = new Buffer.alloc(raw.length + 1);
-            raw.copy(inputForCmacCalc, raw.length);
+            raw.copy(inputForCmacCalc);
             inputForCmacCalc[raw.length] = returnCode;
-            console.log("IV is ", this.key.sessionIv);
             let calccmac = await this.calculateCmac(inputForCmacCalc);
-            console.log("RX CMAC", inputForCmacCalc, " = ", calccmac);
+            //console.log("RX CMAC", inputForCmacCalc, " = ", calccmac.slice(0,8));
+            if (Buffer.compare(cmac, calccmac.slice(0,8)) !== 0) {
+               throw Error("Invalid cmac");
+            }
         } else {
-            console.log("Response: Status ", returnCode, " Data: ", raw, "#", raw.length);
+            //console.log("Response: Status ", returnCode, " Data: ", raw, "#", raw.length);
         }
 
         return [raw, returnCode];
@@ -517,7 +534,7 @@ class DesfireCard extends DesfireBase {
                 buffer[buffer.length - this.key.blockSize + index] ^= this.key.cmac1[index];
             }
         }
-        buffer = await this.key.encryptCBC(buffer);
+        buffer = await this.key.encrypt(buffer, true);
         let result = Buffer.alloc(this.key.sessionIv.length);
         this.key.sessionIv.copy(result);
         return result;
@@ -543,18 +560,10 @@ class DesfireCard extends DesfireBase {
         return Buffer.concat([decipher.update(data), decipher.final()]);
     }
 
-    async decryptResponse(ciphertext) {
-        let plaintext = this.decryptAes(this.sessionKey, ciphertext, this.iv);
-        if (this.keyType === "aes") {
-            this.iv = ciphertext.slice(-16);
-        }
-        return plaintext;
-    }
-
     // Security related commands
 
     async authenticateLegacy(keyId, key) {
-        this.key = new KeyDes(keyId, key);
+        this.key = new DesfireKeyDes(keyId, key);
         await this.key.authenticate(this);
     }
 
@@ -563,11 +572,11 @@ class DesfireCard extends DesfireBase {
     }
 
     async getKeySettings() {
-        const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["GetKeySettings"], []));
-        if (result.slice(-1)[0] !== this.constants.status.success) {
+        let [data, returnCode] = await this.communicate(this.constants.commands.GetKeySettings, [], false, (this.key !== null));
+        if (returnCode !== this.constants.status.success) {
             throw new Error("get key settings failed");
         }
-        return new DesfireKeySettings(result.slice(0,-2));
+        return new DesfireKeySettings(data);
     }
 
     async getKeyVersion(keyNo) {
@@ -631,10 +640,11 @@ class DesfireCard extends DesfireBase {
             newAppId.writeUint32LE(appId);
             appId = newAppId.slice(0,3);
         }
-        const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["SelectApplication"], appId));
+        const result = await this._reader.transmit(Buffer.from(this.wrap(this.constants.commands["SelectApplication"], appId)), 40);
         if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("failed to select app");
         }
+        this.key = null;
     }
 
     async formatPicc() {
@@ -772,7 +782,7 @@ class DesfireCard extends DesfireBase {
     }
 
     async ev1AuthenticateAes(keyId, key) {
-        this.key = new KeyAes(keyId, key);
+        this.key = new DesfireKeyAes(keyId, key);
         await this.key.authenticate(this);
     }
 
@@ -790,11 +800,11 @@ class DesfireCard extends DesfireBase {
     
     async ev1GetCardUid() {
         // Not functional yet!
-        const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["Ev1GetCardUid"], []), 255);
+        /*const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["Ev1GetCardUid"], []), 255);
         if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("read file failed");
         }
-        return this.decryptResponse(result.slice(0, result.length - 2));
+        return this.decryptResponse(result.slice(0, result.length - 2));*/
     };
 
     async ev1GetIsoFileIdentifiers() {
@@ -806,7 +816,9 @@ class DesfireCard extends DesfireBase {
     }
     
     test(keyId, key) {
-        this.key = new KeyAes(keyId, key);
+        this.key = new DesfireKeyAes(keyId, key);
+        this.key.sessionKey = key;
+        this.key.clearIv(true);
     }
 }
 

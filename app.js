@@ -31,10 +31,14 @@ async function handleDesfireCard(desfire) {
         console.log(" > Authenticate to 1234 application with default AES key");
         await desfire.ev1AuthenticateAes(0, desfire.default_aes_key);
 
+        console.log(" > Get key settings");
+        console.log(await desfire.getKeySettings());
+
         /*console.log(" > Get file identifiers");
         let files = await desfire.getFileIdentifiers();
         console.log("Files: ", files);*/
-        
+
+        console.log(" > Get key version");
         let keyVersion = await desfire.getKeyVersion(0);
         console.log("Key version:", keyVersion);
         

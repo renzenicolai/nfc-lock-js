@@ -9,7 +9,6 @@
   "author": "Renze Nicolai",
   "license": "MIT",
   "dependencies": {
-    "@aapeli/nfc-pcsc": "^0.8.3",
-    "buffer-crc32": "^0.2.13"
+    "@aapeli/nfc-pcsc": "^0.8.3"
   }
 }
