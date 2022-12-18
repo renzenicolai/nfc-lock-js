@@ -1,10 +1,6 @@
 "use strict";
 
 const crypto = require("crypto");
-const crc32 = require("buffer-crc32");
-
-const {DESFIRE_COMMANDS, DESFIRE_STATUS, DESFIRE_CONSTANTS} = require("./desfire_consts.js");
-const { KeyDes, KeyAes } = require("./DesfireKey.js");
 
 function writeUint24LE(buffer, value, position = 0) {
     let tempBuffer = Buffer.alloc(4);
@@ -12,8 +8,332 @@ function writeUint24LE(buffer, value, position = 0) {
     tempBuffer.copy(buffer, position, 0, 3);
 }
 
-class DesfireCardVersion {
+class DesfireBase {
+    constructor() {
+        this.constants = {
+            NotAuthenticated: 255,
+            MaxFrameSize: 60, // The maximum total length of a packet that is transfered to / from the card
+
+            commands: {
+                // Security related commands
+                AuthenticateLegacy: 0x0A,
+                ChangeKeySettings: 0x54,
+                GetKeySettings: 0x45,
+                ChangeKey: 0xC4,
+                GetKeyVersion: 0x64,
+
+                // PICC level commands
+                CreateApplication: 0xCA,
+                DeleteApplication: 0xDA,
+                GetApplicationIdentifiers: 0x6A,
+                SelectApplication: 0x5A,
+                FormatPicc: 0xFC,
+                GetVersion: 0x60,
+
+                // Application level commands
+                GetFileIdentifiers: 0x6F,
+                GetFileSettings: 0xF5,
+                ChangeFileSettings: 0x5F,
+                CreateStandardDataFile: 0xCD,
+                CreateBackupDataFile: 0xCB,
+                CreateValueFile: 0xCC,
+                CreateLinearRecordFile: 0xC1,
+                CreateCyclicRecordFile: 0xC0,
+                DeleteFile: 0xDF,
+
+                // Data manipulation commands
+                ReadData: 0xBD,
+                WriteData: 0x3D,
+                GetValue: 0x6C,
+                Credit: 0x0C,
+                Debit: 0xDC,
+                LimitedCredit: 0x1C,
+                WriteRecord: 0x3B,
+                ReadRecords: 0xBB,
+                ClearRecordFile: 0xEB,
+                CommitTransaction: 0xC7,
+                AbortTransaction: 0xA7,
+
+                // Other
+                AdditionalFrame: 0xAF, // data did not fit into a frame, another frame will follow
+
+                // Desfire EV1 instructions
+                Ev1AuthenticateIso: 0x1A,
+                Ev1AuthenticateAes: 0xAA,
+                Ev1FreeMem: 0x6E,
+                Ev1GetDfNames: 0x6D,
+                Ev1GetCardUid: 0x51,
+                Ev1GetIsoFileIdentifiers: 0x61,
+                Ev1SetConfiguration: 0x5C,
+
+                // ISO7816 instructions
+                ISO7816ExternalAuthenticate: 0x82,
+                ISO7816InternalAuthenticate: 0x88,
+                ISO7816AppendRecord: 0xE2,
+                ISO7816GetChallenge: 0x84,
+                ISO7816ReadRecords: 0xB2,
+                ISO7816SelectFile: 0xA4,
+                ISO7816ReadBinary: 0xB0,
+                ISO7816UpdateBinary: 0xD6
+            },
+            
+            status: {
+                success: 0x00,
+                noChanges: 0x0C,
+                outOfMemory: 0x0E,
+                illegalCommand: 0x1C,
+                integrityError: 0x1E,
+                keyDoesNotExist: 0x40,
+                wrongCommandLen: 0x7E,
+                permissionDenied: 0x9D,
+                incorrectParam: 0x9E,
+                appNotFound: 0xA0,
+                appIntegrityError: 0xA1,
+                authentError: 0xAE,
+                moreFrames: 0xAF, // data did not fit into a frame, another frame will follow
+                limitExceeded: 0xBE,
+                cardIntegrityError: 0xC1,
+                commandAborted: 0xCA,
+                cardDisabled: 0xCD,
+                invalidApp: 0xCE,
+                duplicateAidFiles: 0xDE,
+                eepromError: 0xEE,
+                fileNotFound: 0xF0,
+                fileIntegrityError: 0xF1
+            },
+
+            keySettings: {
+                // Bits 0-3
+                allowChangeMk: 0x01, // If this bit is set, the MK can be changed, otherwise it is frozen.
+                listingWithoutMk: 0x02, // Picc key: If this bit is set, GetApplicationIDs, GetKeySettings do not require MK authentication, App  key: If this bit is set, GetFileIDs, GetFileSettings, GetKeySettings do not require MK authentication.
+                createDeleteWithoutMk: 0x04, // Picc key: If this bit is set, CreateApplication does not require MK authentication, App  key: If this bit is set, CreateFile, DeleteFile do not require MK authentication.
+                configurationChangeable: 0x08, // If this bit is set, the configuration settings of the MK can be changed, otherwise they are frozen.
+                
+                // Bits 4-7 (not used for the PICC master key)
+                changeKeyWithMk: 0x00, // A key change requires MK authentication
+                changeKeyWithKey1: 0x10, // A key change requires authentication with key 1
+                changeKeyWithKey2: 0x20, // A key change requires authentication with key 2
+                changeKeyWithKey3: 0x30, // A key change requires authentication with key 3
+                changeKeyWithKey4: 0x40, // A key change requires authentication with key 4 
+                changeKeyWithKey5: 0x50, // A key change requires authentication with key 5
+                changeKeyWithKey6: 0x60, // A key change requires authentication with key 6
+                changeKeyWithKey7: 0x70, // A key change requires authentication with key 7
+                changeKeyWithKey8: 0x80, // A key change requires authentication with key 8
+                changeKeyWithKey9: 0x90, // A key change requires authentication with key 9
+                changeKeyWithKeyA: 0xA0, // A key change requires authentication with key 10
+                changeKeyWithKeyB: 0xB0, // A key change requires authentication with key 11
+                changeKeyWithKeyC: 0xC0, // A key change requires authentication with key 12
+                changeKeyWithKeyD: 0xD0, // A key change requires authentication with key 13
+                changeKeyWithTargetedKey: 0xE0, // A key change requires authentication with the same key that is to be changed
+                changeKeyFrozen: 0xF0, // All keys are frozen
+
+                factoryDefault: 0x0F
+            },
+            
+            keyType: {
+                des: 0x00,
+                tripleDes: 0x40,
+                aes: 0x80
+            }
+        };
+    }
+};
+
+class Key extends DesfireBase {
+    constructor(keyId, key) {
+        super();
+        if (Array.isArray(key)) {
+            key = Buffer.from(key);
+        }
+        if (!Buffer.isBuffer(key)) {
+            throw new Error("expected key to be a buffer or array");
+        }
+        this.key = key;
+        this.keyId = keyId;
+        this.keySize = key.length;
+        this.blockSize = 8;
+
+        this.random_a = null;
+        this.random_b = null;
+
+        this.sessionKey = null;
+        this.sessionIv = null;
+        
+        this.cmac1 = null;
+        this.cmac2 = null;
+    }
+    
+    rotateLeft(buffer) {
+        return Buffer.concat([buffer.slice(1, buffer.length), buffer.slice(0, 1)]);
+    }
+    
+    rotateRight(buffer) {
+        return Buffer.concat([buffer.slice(buffer.length - 1, buffer.length), buffer.slice(0, buffer.length - 1)]);
+    }
+    
+    bitShiftLeft(buffer) {
+        for (let index = 0; index < buffer.length - 1; index++) {
+            buffer[index] = (buffer[index] << 1) | (buffer[index + 1] >> 7);
+        }
+        buffer[buffer.length - 1] = buffer[buffer.length - 1] << 1;
+    }
+    
+    generateCmacSubKeys() {
+        let R = (this.blockSize == 8) ? 0x1B : 0x87;
+        let data = Buffer.alloc(this.blockSize).fill(0);
+        this.sessionIv = Buffer.alloc(this.blockSize).fill(0);
+        this.cmac1 = Buffer.alloc(this.blockSize);
+        this.cmac2 = Buffer.alloc(this.blockSize);
+
+        data = this.encryptCBC(data);
+
+        data.copy(this.cmac1);
+        this.bitShiftLeft(this.cmac1);
+        if (data[0] & 0x80) {
+            this.cmac1[this.cmac1.length - 1] ^= R;
+        }
+
+        this.cmac1.copy(this.cmac2);
+        this.bitShiftLeft(this.cmac2);
+        if (this.cmac1[0] & 0x80) {
+            this.cmac2[this.cmac2.length - 1] ^= R;
+        }
+        
+        this.sessionIv = Buffer.alloc(this.blockSize).fill(0);
+    }
+    
+    decryptCBC(data) {
+        let result = this.decrypt(data, this.sessionIv);
+        this.sessionIv = data.slice(-1 * this.blockSize);
+        return result;
+    }
+    
+    encryptCBC(data) {
+        let result = this.encrypt(data, this.sessionIv);
+        this.sessionIv = result.slice(-1 * this.blockSize);
+        return result;
+    }
+    
+    decrypt() {
+        throw new Error("not implemented");
+    }
+    
+    encrypt() {
+        throw new Error("not implemented");
+    }
+    
+    async authenticate() {
+        throw new Error("not implemented");
+    }
+}
+
+class KeyDes extends Key {
+    constructor(keyId, key) {
+        super(keyId, key);
+        if (this.keySize !== 16) {
+            throw new Error("invalid key length");
+        }
+        this.blockSize = 8;
+    }
+    
+    decrypt(data, iv = Buffer.alloc(8).fill(0)) {
+        const decipher = crypto.createDecipheriv("DES-EDE-CBC", this.key, iv);
+        decipher.setAutoPadding(false);
+        return Buffer.concat([decipher.update(data), decipher.final()]);
+    }
+
+    encrypt(data, iv = Buffer.alloc(8).fill(0)) {
+        const decipher = crypto.createCipheriv("DES-EDE-CBC", this.key, iv);
+        decipher.setAutoPadding(false);
+        return Buffer.concat([decipher.update(data), decipher.final()]);
+    }
+    
+    async authenticate(card) {
+        let [data, returnCode] = await card.executeTransaction(card.wrap(this.constants.commands["AuthenticateLegacy"], [this.keyId]));
+        if (returnCode !== this.constants.status.moreFrames) {
+            throw new Error("failed to authenticate");
+        }
+        const random_b_encrypted = data; // encrypted random_b from reader
+        this.random_b = this.decrypt(random_b_encrypted);     
+        const random_b_rotated = this.rotateLeft(this.random_b);
+        this.random_a = crypto.randomBytes(this.random_b.length);
+        const ciphertext = this.encrypt(Buffer.concat([this.random_a, random_b_rotated]));
+        [data, returnCode] = await card.executeTransaction(card.wrap(this.constants.commands["AdditionalFrame"], ciphertext));
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("failed to set up random_a");
+        }
+        const random_a2_encrypted_rotated = data;
+        const random_a2_rotated = this.decrypt(random_a2_encrypted_rotated); // decrypt to get rotated value of random_a2
+        const random_a2 =this.rotateRight(random_a2_rotated);
+        if (!this.random_a.equals(random_a2)) { // compare decrypted random_a2 response from reader with our random_a if it equals authentication process was successful
+            throw new Error("failed to match random_a random bytes");
+        }
+        
+        this.sessionKey = Buffer.concat([this.random_a.slice(0,4), this.random_b.slice(0,4)]);
+        this.sessionIv = Buffer.alloc(8).fill(0);
+        this.generateCmacSubKeys();
+    }
+}
+
+class KeyAes extends Key {
+    constructor(keyId, key) {
+        super(keyId, key);
+        if (this.keySize !== 16) {
+            throw new Error("invalid key length");
+        }
+        this.blockSize = 16;
+    }
+    
+    decrypt(data, iv = Buffer.alloc(16).fill(0)) {
+        const decipher = crypto.createDecipheriv("AES-128-CBC", this.key, iv);
+        decipher.setAutoPadding(false);
+        return Buffer.concat([decipher.update(data), decipher.final()]);
+    }
+    
+    encrypt(data, iv = Buffer.alloc(16).fill(0)) {
+        const decipher = crypto.createCipheriv("AES-128-CBC", this.key, iv);
+        decipher.setAutoPadding(false);
+        return Buffer.concat([decipher.update(data), decipher.final()]);
+    }
+    
+    async authenticate(card) {
+        let [data, returnCode] = await card.executeTransaction(card.wrap(this.constants.commands["Ev1AuthenticateAes"], [this.keyId]));
+        if (returnCode !== this.constants.status.moreFrames) {
+            throw new Error("failed to authenticate");
+        }
+        const random_b_encrypted = data; // encrypted random_b from reader
+        this.random_b = this.decrypt(random_b_encrypted);
+        const random_b_rotated = this.rotateLeft(this.random_b);
+        this.random_a = crypto.randomBytes(this.random_b.length);
+        const ciphertext = this.encrypt(Buffer.concat([this.random_a, random_b_rotated]), random_b_encrypted);
+        [data, returnCode] = await card.executeTransaction(card.wrap(this.constants.commands["AdditionalFrame"], ciphertext));
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("failed to set up random_a");
+        }
+        const random_a_encrypted_rotated = data; // encrypted random a from reader
+        const random_a_rotated = this.decrypt(random_a_encrypted_rotated, ciphertext.slice(-16)); // decrypt to get rotated value of random_a2
+        const random_a2 = this.rotateRight(random_a_rotated);
+        if (!this.random_a.equals(random_a2)) { // compare decrypted random_a2 response from reader with our random_a if it equals authentication process was successful
+            throw new Error("failed to match random_a random bytes");
+        }
+        
+        this.sessionKey = Buffer.concat([this.random_a.slice(0,4), this.random_b.slice(0,4), this.random_a.slice(12, 16), this.random_b.slice(12, 16)]);
+        this.sessionIv = Buffer.alloc(16).fill(0);
+        this.generateCmacSubKeys();
+    }
+    
+    /*
+     *         this.sessionKey = Buffer.concat([random_a.slice(0,4), random_b.slice(0,4), random_a.slice(12, 16), random_b.slice(12, 16)]);
+        this.iv = Buffer.alloc(16).fill(0);
+        this.keyType = "aes";
+        this.keyId = keyId;
+        this.blockSize = 16;
+        */
+}
+
+class DesfireCardVersion extends DesfireBase {
     constructor(buffer) {
+        super();
         if (buffer.length != 28) {
             throw new Error("Expected exactly 28 bytes");
         }
@@ -56,8 +376,9 @@ class DesfireCardVersion {
     }
 }
 
-class DesfireKeySettings {
+class DesfireKeySettings extends DesfireBase {
     constructor(buffer = Buffer.from([0x0F, 0x00])) {
+        super();
         let settings = buffer.readUint8(0);
         this.allowChangeMk              = Boolean(settings & 0x01);
         this.allowListingWithoutMk      = Boolean(settings & 0x02);
@@ -92,12 +413,14 @@ class DesfireKeySettings {
     }
 }
 
-class DesfireCard {
+class DesfireCard extends DesfireBase {
     constructor(reader, card) {
+        super();
         this._reader = reader;
         this._card = card;
 
-        this.default_des_key = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        this.default_des_key = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        this.default_3des_key = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         this.default_aes_key = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
         this.key = null;
@@ -109,35 +432,92 @@ class DesfireCard {
         return Object.keys(object).find(key => object[key] === value);
     }
 
-    async executeTransactionRaw(cmd, responseMaxLength = 40) {
-        return this._reader.transmit(Buffer.from(cmd), responseMaxLength);
+    async executeTransactionRaw(packet, responseMaxLength = 40) {
+        return this._reader.transmit(Buffer.from(packet), responseMaxLength);
     };
 
-    async executeTransaction(cmd, responseMaxLength = 40) {
-        let raw = await this._reader.transmit(Buffer.from(cmd), responseMaxLength);
-        let resultCode = raw.slice(-1)[0];
+    async executeTransaction(packet, responseMaxLength = 40) {
+        let raw = await this._reader.transmit(Buffer.from(packet), responseMaxLength);
+        let returnCode = raw.slice(-1)[0];
         let data = raw.slice(0, -2);
-        return [data, resultCode];
+        return [data, returnCode];
+    }
+    
+    async communicate(cmd, data, encrypted = False, useTxCmac = False) {
+        console.log("Communicate: ", cmd.toString(16), data);
+        if ((encrypted || useTxCmac) && (this.key === null)) {
+            throw Error("Not authenticated");
+        }
+        
+        let txData = Buffer.from([cmd, ...data]);
+        console.log("IV is ", this.key.sessionIv);
+        let txCmac = await this.calculateCmac(txData);
+        console.log("TX CMAC", txData, " = ", txCmac);
+
+        let packet = this.wrap(cmd, data);
+        
+        let raw = await this._reader.transmit(Buffer.from(packet), 40);
+        
+        console.log("Raw response: ", raw, "#", raw.length);
+        
+        if (raw[raw.length - 2] !== 0x91) {
+            throw Error("Invalid response");
+        }
+
+        let returnCode = raw.slice(-1)[0];
+        raw = raw.slice(0,-2);
+        
+        if (useTxCmac) {
+            let cmac = raw.slice(-8);
+            raw = raw.slice(0, -8);
+            console.log("Response: Status ", returnCode, "CMAC: ", cmac, " Data: ", raw, "#", raw.length);
+            
+            let inputForCmacCalc = new Buffer.alloc(raw.length + 1);
+            raw.copy(inputForCmacCalc, raw.length);
+            inputForCmacCalc[raw.length] = returnCode;
+            console.log("IV is ", this.key.sessionIv);
+            let calccmac = await this.calculateCmac(inputForCmacCalc);
+            console.log("RX CMAC", inputForCmacCalc, " = ", calccmac);
+        } else {
+            console.log("Response: Status ", returnCode, " Data: ", raw, "#", raw.length);
+        }
+
+        return [raw, returnCode];
+    }
+    
+    crc(data) {
+        let poly = 0xEDB88320;
+        let crc = 0xFFFFFFFF;
+        for (let n = 0; n < data.length; n++) {
+            crc ^= data[n];
+            for (let b = 0; b < 8; b++) {
+                if (crc & 1) {
+                    crc = (crc >>> 1) ^ poly;
+                } else {
+                    crc = (crc >>> 1);
+                }
+            }
+        }
+        
+        return crc >>> 0;
     }
 
     async calculateCmac(input) {
         let buffer = Buffer.from(input);
-        if (buffer.length % this.key.blockSize) {
+        let paddingLength = (buffer.length < this.key.blockSize) ? (this.key.blockSize - buffer.length) : ((this.key.blockSize - (buffer.length % this.key.blockSize)) % this.key.blockSize);
+        if (paddingLength > 0) {
+            paddingLength -= 1;
             buffer = Buffer.concat([buffer, Buffer.from([0x80])]);
-            buffer = Buffer.concat([buffer, Buffer.from(new Array(buffer.length % this.key.blockSize).fill(0))]);
-            //console.log("Padded CMAC input", buffer);
+            buffer = Buffer.concat([buffer, Buffer.from(new Array(paddingLength).fill(0))]);
             for (let index = 0; index < this.key.blockSize; index++) {
                 buffer[buffer.length - this.key.blockSize + index] ^= this.key.cmac2[index];
             }
-            //console.log("After XOR", buffer);
         } else {
-            //console.log("Unpadded CMAC input", buffer);
             for (let index = 0; index < this.key.blockSize; index++) {
                 buffer[buffer.length - this.key.blockSize + index] ^= this.key.cmac1[index];
             }
-            //console.log("After XOR", buffer);
         }
-        buffer = this.key.encryptCBC(buffer.slice(-1 * this.key.blockSize));
+        buffer = await this.key.encryptCBC(buffer);
         let result = Buffer.alloc(this.key.sessionIv.length);
         this.key.sessionIv.copy(result);
         return result;
@@ -183,50 +563,58 @@ class DesfireCard {
     }
 
     async getKeySettings() {
-        const result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["GetKeySettings"], []));
-        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+        const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["GetKeySettings"], []));
+        if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("get key settings failed");
         }
         return new DesfireKeySettings(result.slice(0,-2));
     }
 
     async getKeyVersion(keyNo) {
-        const result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["GetKeyVersion"], [keyNo]));
-        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+        let [data, returnCode] = await this.communicate(this.constants.commands.GetKeyVersion, [keyNo], false, true);
+        if (returnCode !== this.constants.status.success) {
             throw new Error("get key version failed");
         }
-        return result.readUint8(0);
+        return data.readUint8(0);
     }
 
     // PICC level commands
 
     async createApplication(aAppId, aSettings, aKeyCount, aKeyType) {
-        console.log("> Create application ", aAppId.toString(16));
+        if (typeof aAppId !== "number" || aAppId < 0 || aAppId >= Math.pow(2, 8 * 3)) { // 3 bytes
+            throw Error("Application identifier needs to be a positive number of at most three bytes");
+        }
         let parameters = Buffer.alloc(5);
         writeUint24LE(parameters, aAppId, 0);
         parameters.writeUint8(aSettings, 3);
         parameters.writeUint8(aKeyCount | aKeyType, 4);
-        console.log("  Parameters:", parameters);
-        let [data, returnCode] = await this.executeTransaction(this.wrap(DESFIRE_COMMANDS["CreateApplication"], parameters));
-        /*console.log("Return code:", this.getKeyByValue(DESFIRE_STATUS, returnCode));
-        console.log("Data:       ", data);*/
-        if (returnCode !== DESFIRE_STATUS["Success"]) {
-            throw new Error("create application failed (" + this.getKeyByValue(DESFIRE_STATUS, returnCode) + ")");
+        console.log(parameters, aKeyCount, aKeyType);
+        let [data, returnCode] = await this.executeTransaction(this.wrap(this.constants.commands["CreateApplication"], parameters));
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Create application failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
     }
 
-    async deleteApplication() {
-        throw new Error("Not implemented");
+    async deleteApplication(aAppId) {
+        if (typeof aAppId !== "number" || aAppId < 0 || aAppId >= Math.pow(2, 8 * 3)) { // 3 bytes
+            throw Error("Application identifier needs to be a positive number of at most three bytes");
+        }
+        let parameters = Buffer.alloc(3);
+        writeUint24LE(parameters, aAppId, 0);
+        let [data, returnCode] = await this.executeTransaction(this.wrap(this.constants.commands.DeleteApplication, parameters));
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Delete application failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
     }
 
     async getApplicationIdentifiers() {
-        let result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["GetApplicationIdentifiers"], []));
+        let result = await this.executeTransactionRaw(this.wrap(this.constants.commands["GetApplicationIdentifiers"], []));
         let appsRaw = Buffer.from(result.slice(0,result.length-2));
-        while (result.slice(-1)[0] === DESFIRE_STATUS["MoreFrames"]) {
-            result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], []));
+        while (result.slice(-1)[0] === this.constants.status.moreFrames) {
+            result = await this.executeTransactionRaw(this.wrap(this.constants.commands["AdditionalFrame"], []));
             appsRaw = Buffer.concat([appsRaw, result.slice(0,result.length-2)]);
         }
-        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+        if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("failed to list application ids");
         }
         let appsArray = appsRaw.toJSON().data;
@@ -243,27 +631,27 @@ class DesfireCard {
             newAppId.writeUint32LE(appId);
             appId = newAppId.slice(0,3);
         }
-        const result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["SelectApplication"], appId));
-        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+        const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["SelectApplication"], appId));
+        if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("failed to select app");
         }
     }
 
     async formatPicc() {
-        const result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["FormatPicc"], []));
-        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+        const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["FormatPicc"], []));
+        if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("format failed");
         }
     }
 
     async getVersion() {
-        let result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["GetVersion"], []));
+        let result = await this.executeTransactionRaw(this.wrap(this.constants.commands["GetVersion"], []));
         let data = Buffer.from(result.slice(0,result.length-2));
-        while (result.slice(-1)[0] === DESFIRE_STATUS["MoreFrames"]) {
-            result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["AdditionalFrame"], []));
+        while (result.slice(-1)[0] === this.constants.status.moreFrames) {
+            result = await this.executeTransactionRaw(this.wrap(this.constants.commands["AdditionalFrame"], []));
             data = Buffer.concat([data, result.slice(0,result.length-2)]);
         }
-        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+        if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("failed to get card version");
         }
         return new DesfireCardVersion(data);
@@ -272,7 +660,12 @@ class DesfireCard {
     // Application level commands
 
     async getFileIdentifiers() {
-        throw new Error("Not implemented");
+        let [data, returnCode] = await this.communicate(
+            this.constants.commands.GetFileIdentifiers, [], false, true);
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Failed to get file identifiers (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
+        return data;
     }
 
     async getFileSettings() {
@@ -315,10 +708,10 @@ class DesfireCard {
         writeUint24LE(parameters, aOffset, 1);
         writeUint24LE(parameters, aLength, 4);
         console.log(parameters);
-        let [data, resultCode] = await this.executeTransaction(this.wrap(DESFIRE_COMMANDS["ReadData"], parameters), 0xFF);
+        let [data, returnCode] = await this.executeTransaction(this.wrap(this.constants.commands["ReadData"], parameters), 0xFF);
 
-        if (resultCode !== DESFIRE_STATUS["Success"]) {
-            throw new Error("read file failed (0x" + resultCode.toString(16) + ")");
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("read file failed (0x" + returnCode.toString(16) + ")");
         }
 
         let content = data.slice(0,aLength);
@@ -384,8 +777,8 @@ class DesfireCard {
     }
 
     async ev1FreeMem() {
-        const result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["Ev1FreeMem"], []));
-        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+        const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["Ev1FreeMem"], []));
+        if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("get free memory failed");
         }
         return Buffer.concat([result.slice(0,3), Buffer.from([0x00])]).readUint32LE();
@@ -397,8 +790,8 @@ class DesfireCard {
     
     async ev1GetCardUid() {
         // Not functional yet!
-        const result = await this.executeTransactionRaw(this.wrap(DESFIRE_COMMANDS["Ev1GetCardUid"], []), 255);
-        if (result.slice(-1)[0] !== DESFIRE_STATUS["Success"]) {
+        const result = await this.executeTransactionRaw(this.wrap(this.constants.commands["Ev1GetCardUid"], []), 255);
+        if (result.slice(-1)[0] !== this.constants.status.success) {
             throw new Error("read file failed");
         }
         return this.decryptResponse(result.slice(0, result.length - 2));
@@ -410,6 +803,10 @@ class DesfireCard {
 
     async ev1SetConfiguration() {
         throw new Error("Not implemented");
+    }
+    
+    test(keyId, key) {
+        this.key = new KeyAes(keyId, key);
     }
 }
 
