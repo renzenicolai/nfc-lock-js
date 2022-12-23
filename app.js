@@ -21,6 +21,10 @@ async function handleDesfireCard(desfire) {
         let version = await desfire.getVersion();
         version.print();
 
+        console.log(" > DES Get card UID");
+        let uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);
+
         console.log(" > Format card");
         await desfire.formatPicc();
 
@@ -37,6 +41,18 @@ async function handleDesfireCard(desfire) {
         console.log(" > Authenticate to 1234 application with default AES key");
         await desfire.ev1AuthenticateAes(0, desfire.default_aes_key);
 
+        console.log(" > AES Get card UID");
+        uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);
+
+        console.log(" > AES Get card UID");
+        uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);
+
+        console.log(" > AES Get card UID");
+        uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);
+
         console.log(" > Get key settings");
         console.log(await desfire.getKeySettings());
 
@@ -44,9 +60,45 @@ async function handleDesfireCard(desfire) {
         let keyVersion = await desfire.getKeyVersion(0);
         console.log("Key version:", keyVersion);
 
+        console.log(" > Get card UID");
+        uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);
+
+        console.log(" > Get card UID");
+        uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);
+
+        console.log(" > Get card UID");
+        uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);
+
+        console.log(" > Create file (plain)");
+        await desfire.createStandardDataFile(0, false, false, 0, 0, 0, 0, 32);
+
+        console.log(" > Write data to file (plain)");
+        await desfire.writeData(0, Buffer.from("Hello plain text", "utf-8"), false, false, 0);
+
+        console.log(" > Read data from file (plain)");
+        let fileContents = await desfire.readData(0, false, false, 0, 16);
+        console.log("File contents:", fileContents);
+
+        console.log(" > Create file (CMAC)");
+        await desfire.createStandardDataFile(1, true, false, 0, 0, 0, 0, 32);
+
+        /*console.log(" > Write data to file (CMAC)");
+        await desfire.writeData(1, Buffer.from("Hello CMAC", "utf-8"), true, false, 0);
+
+        console.log(" > Read data from file (CMAC)");
+        let fileContents = await desfire.readData(0, false, false, 0, 16);
+        console.log("File contents:", fileContents);*/
+
         console.log(" > Get file identifiers");
         let files = await desfire.getFileIdentifiers();
         console.log("Files: ", files);
+
+        console.log(" > Get card UID");
+        uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);
         
         console.log(" > Delete application");
         desfire.deleteApplication(1234);
@@ -55,6 +107,7 @@ async function handleDesfireCard(desfire) {
         applications = await desfire.getApplicationIdentifiers();
         console.log("Applications: ", applications);
 
+        console.log(" > Get free memory");
         let freeMemory = await desfire.ev1FreeMem();
         console.log("Free memory: ", freeMemory, "bytes");
     } catch (error) {
