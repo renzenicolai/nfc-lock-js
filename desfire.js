@@ -1,9 +1,6 @@
 "use strict";
 
 const crypto = require("crypto");
-const { CRC, CRCModel } = require('crc-multi');
-
-const crc16model = CRCModel.GetModel('CRC-16/ISO-IEC-14443-3-A');
 
 function writeUint24LE(buffer, value, position = 0) {
     let tempBuffer = Buffer.alloc(4);
@@ -283,7 +280,7 @@ class DesfireKeyDes extends DesfireKey {
     
     async authenticate(card) {
         this.clearIv(false);
-        let [data, returnCode] = await card.communicateOld(this.constants.commands.AuthenticateLegacy, [this.authenticationkeyIdentifier], false, false);
+        let [data, returnCode] = await card.communicate(this.constants.commands.AuthenticateLegacy, [this.authenticationkeyIdentifier], null, false, false, false, false);
         if (returnCode !== this.constants.status.moreFrames) {
             throw new Error("failed to authenticate");
         }
@@ -292,7 +289,7 @@ class DesfireKeyDes extends DesfireKey {
         const random_b_rotated = this.rotateLeft(this.random_b);
         this.random_a = crypto.randomBytes(this.random_b.length);
         const ciphertext = this.encrypt(Buffer.concat([this.random_a, random_b_rotated]), false);
-        [data, returnCode] = await card.communicateOld(this.constants.commands.AdditionalFrame, ciphertext, false, false);
+        [data, returnCode] = await card.communicate(this.constants.commands.AdditionalFrame, ciphertext, null, false, false, false, false);
         if (returnCode !== this.constants.status.success) {
             throw new Error("failed to set up random_a");
         }
@@ -346,7 +343,7 @@ class DesfireKeyAes extends DesfireKey {
     
     async authenticate(card) {
         this.clearIv(false);
-        let [data, returnCode] = await card.communicateOld(this.constants.commands.Ev1AuthenticateAes, [this.authenticationkeyIdentifier], false, false);
+        let [data, returnCode] = await card.communicate(this.constants.commands.Ev1AuthenticateAes, [this.authenticationkeyIdentifier], null, false, false, false, false);
         if (returnCode !== this.constants.status.moreFrames) {
             throw new Error("failed to authenticate");
         }
@@ -355,7 +352,7 @@ class DesfireKeyAes extends DesfireKey {
         const random_b_rotated = this.rotateLeft(this.random_b);
         this.random_a = crypto.randomBytes(this.random_b.length);
         const ciphertext = this.encrypt(Buffer.concat([this.random_a, random_b_rotated]), false);
-        [data, returnCode] = await card.communicateOld(this.constants.commands.AdditionalFrame, ciphertext, false, false);
+        [data, returnCode] = await card.communicate(this.constants.commands.AdditionalFrame, ciphertext, null, false, false, false, false);
         if (returnCode !== this.constants.status.success) {
             throw new Error("failed to set up random_a");
         }
@@ -473,7 +470,7 @@ class DesfireCard extends DesfireBase {
         return Object.keys(object).find(key => object[key] === value);
     }
 
-    async communicate(cmd, data, encryptData = null, calculateTxCmac = false, checkRxCmac = false, decryptRxData = false) {
+    async communicate(cmd, data = [], encryptData = null, calculateTxCmac = false, checkRxCmac = false, decryptRxData = false, handleAdditionalFrames = true) {
         //console.log("Communicate: ", cmd.toString(16), data);
         if (((encryptData !== null) || calculateTxCmac || checkRxCmac || decryptRxData) && (this.key === null)) {
             throw Error("Not authenticated");
@@ -489,19 +486,23 @@ class DesfireCard extends DesfireBase {
         let packet = this.wrap(cmd, plainData);
 
         if (encryptData !== null) {
+            encryptData = Buffer.from(encryptData);
             let crcSize = (this.key instanceof DesfireKeyAes) ? 4 : 2;
-            let crc = (this.key instanceof DesfireKeyAes) ? this.crc32(Buffer.from(encryptData)) : this.crc16(Buffer.from(encryptData));
+            let crcInput = Buffer.concat([Buffer.from([cmd]), Buffer.from(data), Buffer.from(encryptData)]);
+            let crc = (this.key instanceof DesfireKeyAes) ? this.crc32(crcInput) : this.crc16(Buffer.from(crcInput));
             let buffer = Buffer.alloc(encryptData.length + crcSize);
             encryptData.copy(buffer);
             buffer.writeUInt32LE(crc, encryptData.length);
-            let encryptedData = this.padAndEncrypt(buffer);
+            let encryptedData = await this.padAndEncrypt(buffer);
             let combinedData = Buffer.alloc(plainData.length + encryptedData.length);
             plainData.copy(combinedData);
             encryptedData.copy(combinedData, plainData.length);
             packet = this.wrap(cmd, combinedData);
         }
 
+        //console.log(" > ", packet);
         let raw = await this._reader.transmit(packet, 40);
+        //console.log(" < ", raw);
 
         if (raw[raw.length - 2] !== 0x91) {
             throw Error("Invalid response");
@@ -515,14 +516,20 @@ class DesfireCard extends DesfireBase {
             return [raw, returnCode];
         }
 
-        while (returnCode === this.constants.status.moreFrames) {
-            console.log("Additional frame");
-            let result = await this._reader.transmit(this.wrap(this.constants.commands.AdditionalFrame, []), 40);
-            returnCode = result.slice(-1)[0];
-            raw = Buffer.concat([raw, result.slice(0,-2)]);
-            if (returnCode !== this.constants.status.success && returnCode !== this.constants.status.moreFrames) {
-                console.log("Card returned error code ", returnCode.toString(16));
-                return [raw, returnCode];
+        if (handleAdditionalFrames) {
+            while (returnCode === this.constants.status.moreFrames) {
+                let result = await this._reader.transmit(this.wrap(this.constants.commands.AdditionalFrame, []), 40);
+                //console.log(" A ", result);
+                returnCode = result.slice(-1)[0];
+                raw = Buffer.concat([raw, result.slice(0,-2)]);
+                if (returnCode !== this.constants.status.success && returnCode !== this.constants.status.moreFrames) {
+                    console.log("Card returned error code ", returnCode.toString(16));
+                    return [raw, returnCode];
+                }
+                if (raw.length == 0) {
+                    console.error("Warning: card expected more data");
+                    break;
+                }
             }
         }
 
@@ -551,86 +558,19 @@ class DesfireCard extends DesfireBase {
 
     verifyCrc(buffer, dataLength, status = 0) {
         let inputCrc = buffer.readUint32LE(dataLength);
-        let inputBuffer = Buffer.alloc(dataLength + 1);
-        buffer.slice(0,dataLength).copy(inputBuffer);
-        inputBuffer[dataLength] = status;
-        let calcCrc = (this.key instanceof DesfireKeyAes) ? this.crc32(inputBuffer) : this.crc16(inputBuffer);
-        let result = (inputCrc == calcCrc);
-        console.log("CRC", (this.key instanceof DesfireKeyAes), result, inputCrc, calcCrc, inputBuffer, buffer);
-        return result;
-    }
-
-    async communicateOld(cmd, data, encrypted = false, useCmac = false, handleAdditionalFrames = false, sendTxCmac = false) {
-        //console.log("Communicate: ", cmd.toString(16), data);
-        if ((encrypted || useCmac) && (this.key === null)) {
-            throw Error("Not authenticated");
+        let calcCrc = 0;
+        if (this.key instanceof DesfireKeyAes) { // AES or 3K3DES
+            let inputBuffer = Buffer.alloc(dataLength + 1);
+            buffer.slice(0,dataLength).copy(inputBuffer);
+            inputBuffer[dataLength] = status;
+            calcCrc =  this.crc32(inputBuffer);
+        } else { // DES or 3DES (legacy)
+            let inputBuffer = Buffer.alloc(dataLength);
+            buffer.slice(0,dataLength).copy(inputBuffer);
+            calcCrc = this.crc16(inputBuffer);
         }
-        
-        let packet = this.wrap(cmd, data);
-
-        if (useCmac) {
-            let txData = Buffer.from([cmd, ...data]);
-            let txCmac = await this.calculateCmac(txData);
-            //console.log("TX CMAC", txData, " = ", txCmac);
-            if (sendTxCmac) {
-                let newPacket = Buffer.alloc(packet.length + 8);
-                packet.copy(newPacket);
-                txCmac.slice(0,8).copy(newPacket, packet.length);
-                console.log("Appended CMAC to packet", packet, newPacket);
-                packet = newPacket;
-            }
-        }
-        
-        let raw = await this._reader.transmit(packet, 40);
-        
-        //console.log("Raw response: ", raw, "#", raw.length);
-        
-        if (raw[raw.length - 2] !== 0x91) {
-            throw Error("Invalid response");
-        }
-
-        let returnCode = raw.slice(-1)[0];
-        raw = raw.slice(0,-2);
-
-        if (returnCode !== this.constants.status.success && returnCode !== this.constants.status.moreFrames) {
-            console.log("Card returned error code ", returnCode.toString(16));
-            return [raw, returnCode];
-        }
-
-        if (handleAdditionalFrames) {
-            while (returnCode === this.constants.status.moreFrames) {
-                console.log("Additional frame");
-                let result = await this._reader.transmit(this.wrap(this.constants.commands.AdditionalFrame, []), 40);
-                returnCode = result.slice(-1)[0];
-                raw = Buffer.concat([raw, result.slice(0,-2)]);
-                if (returnCode !== this.constants.status.success && returnCode !== this.constants.status.moreFrames) {
-                    console.log("Card returned error code ", returnCode.toString(16));
-                    return [raw, returnCode];
-                }
-            }
-        }
-        
-        if (useCmac) {
-            let cmac = raw.slice(-8);
-            raw = raw.slice(0, -8);
-            let inputForCmacCalc = new Buffer.alloc(raw.length + 1);
-            raw.copy(inputForCmacCalc);
-            inputForCmacCalc[raw.length] = returnCode;
-            let calccmac = await this.calculateCmac(inputForCmacCalc);
-            if (Buffer.compare(cmac, calccmac.slice(0,8)) !== 0) {
-                console.log("Response: Status ", returnCode, "CMAC: ", cmac, " Data: ", raw, "#", raw.length);
-                console.log("RX CMAC", inputForCmacCalc, " = ", calccmac.slice(0,8));
-                throw Error("Invalid cmac");
-            }
-        } else {
-            //console.log("Response: Status ", returnCode, " Data: ", raw, "#", raw.length);
-        }
-
-        if (encrypted) { // Decrypt response
-            raw = this.key.decrypt(raw, true);
-        }
-
-        return [raw, returnCode];
+        if (inputCrc != calcCrc) console.log("CRC INVALID", buffer, dataLength, inputCrc.toString(16), calcCrc.toString(16));
+        return (inputCrc == calcCrc);
     }
     
     crc32(data) {
@@ -651,22 +591,15 @@ class DesfireCard extends DesfireBase {
     }
 
     crc16(data) {
-        const crc = new CRC(crc16model);
-        return crc.compute(data);
-        /*let poly = 0x8408;
-        let crc = 0x6363;
-        for (let n = 0; n < data.length; n++) {
-            crc = data[n];
-            for (let b = 0; b < 8; b++) {
-                if (crc & 1) {
-                    crc = (crc >>> 1) ^ poly;
-                } else {
-                    crc = (crc >>> 1);
-                }
-            }
+        let reg = 0x6363;
+        for (let position = 0; position < data.length; position++) {
+            let bt = data[position];
+            bt = (bt ^ (reg & 0xFF)) & 0xFF;
+            bt = (bt ^ (bt << 4)) & 0xFF;
+            reg = ((reg >>> 8) ^ ((bt & 0xFFFF) << 8) ^ ((bt & 0xFFFF) << 3) ^ ((bt & 0xFFFF) >> 4)) & 0xFFFF;
         }
 
-        return (crc >>> 0) & 0xFFFF;*/
+        return (reg >>> 0);
     }
 
     async calculateCmac(input) {
@@ -694,14 +627,12 @@ class DesfireCard extends DesfireBase {
         let buffer = Buffer.from(input);
         let paddingLength = (buffer.length < this.key.blockSize) ? (this.key.blockSize - buffer.length) : ((this.key.blockSize - (buffer.length % this.key.blockSize)) % this.key.blockSize);
         if (paddingLength > 0) {
-            paddingLength -= 1;
-            buffer = Buffer.concat([buffer, Buffer.from([0x80])]);
             buffer = Buffer.concat([buffer, Buffer.from(new Array(paddingLength).fill(0))]);
         }
         buffer = await this.key.encrypt(buffer, true);
         let result = Buffer.alloc(this.key.sessionIv.length);
         this.key.sessionIv.copy(result);
-        return result;
+        return buffer;
     }
     
     wrap(cmd, dataIn) {
@@ -730,7 +661,7 @@ class DesfireCard extends DesfireBase {
     }
 
     async getKeySettings() {
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.GetKeySettings, [], false, (this.key !== null));
+        let [data, returnCode] = await this.communicate(this.constants.commands.GetKeySettings, [], null, true, true);
         if (returnCode !== this.constants.status.success) {
             throw new Error("get key settings failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -742,7 +673,7 @@ class DesfireCard extends DesfireBase {
     }
 
     async getKeyVersion(keyNo) {
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.GetKeyVersion, [keyNo], false, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.GetKeyVersion, [keyNo], null, true, true);
         if (returnCode !== this.constants.status.success) {
             throw new Error("get key version failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -778,7 +709,7 @@ class DesfireCard extends DesfireBase {
     }
 
     async getApplicationIdentifiers() {
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.GetApplicationIdentifiers, [], false, false, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.GetApplicationIdentifiers);
         if (returnCode !== this.constants.status.success) {
             throw new Error("failed to get application identifiers (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -796,7 +727,7 @@ class DesfireCard extends DesfireBase {
             newAppId.writeUint32LE(appId);
             appId = newAppId.slice(0,3);
         }
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.SelectApplication, appId, false, false, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.SelectApplication, appId);
         if (returnCode !== this.constants.status.success) {
             throw new Error("Select application failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -804,14 +735,14 @@ class DesfireCard extends DesfireBase {
     }
 
     async formatPicc() {
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.FormatPicc, [], false, false);
+        let [data, returnCode] = await this.communicate(this.constants.commands.FormatPicc);
         if (returnCode !== this.constants.status.success) {
             throw new Error("format failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
     }
 
     async getVersion() {
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.GetVersion, [], false, false, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.GetVersion);
         if (returnCode !== this.constants.status.success) {
             throw new Error("failed to get card version (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -821,15 +752,15 @@ class DesfireCard extends DesfireBase {
     // Application level commands
 
     async getFileIdentifiers() {
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.GetFileIdentifiers, [], false, true, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.GetFileIdentifiers, [], null, true, true);
         if (returnCode !== this.constants.status.success) {
             throw new Error("Failed to get file identifiers (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
         return data;
     }
 
-    async getFileSettings(fileNo) {
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.GetFileSettings, [fileNo], false, true, true);
+    async getFileSettings(fileNo) { // TEST
+        let [data, returnCode] = await this.communicate(this.constants.commands.GetFileSettings, [fileNo], null, true, true);
         if (returnCode !== this.constants.status.success) {
             throw new Error("Failed to get file settings (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -858,7 +789,7 @@ class DesfireCard extends DesfireBase {
         }
         params.writeUint16LE((changeAccessRights & 0xF) + ((readAndWriteAccess & 0xF) << 4) + ((writeAccess & 0xF) << 8) + ((readAccess & 0xF) << 12), 2);
         writeUint24LE(params, fileSize, 4);
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.CreateStandardDataFile, params, false, true, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.CreateStandardDataFile, params, null, true, true);
         if (returnCode !== this.constants.status.success) {
             throw new Error("Failed to create standard data file (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -876,7 +807,7 @@ class DesfireCard extends DesfireBase {
         }
         params.writeUint16LE((changeAccessRights & 0xF) + ((readAndWriteAccess & 0xF) << 4) + ((writeAccess & 0xF) << 8) + ((readAccess & 0xF) << 12), 2);
         writeUint24LE(params, fileSize, 4);
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.CreateBackupDataFile, params, false, true, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.CreateBackupDataFile, params, null, true, true);
         if (returnCode !== this.constants.status.success) {
             throw new Error("Failed to create standard data file (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -896,7 +827,7 @@ class DesfireCard extends DesfireBase {
     }
 
     async deleteFile(fileNo) {
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.DeleteFile, [fileNo], false, true, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.DeleteFile, [fileNo], null, true, true);
         if (returnCode !== this.constants.status.success) {
             throw new Error("Failed to get file settings (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -905,30 +836,78 @@ class DesfireCard extends DesfireBase {
 
     // Data manipulation commands
 
-    async readData(aFileId, commsCmac = false, commsEncrypted = false, aOffset = 0, aLength = 0) {
+    async readDataPlain(aFileId, aOffset = 0, aLength = 0) {
         let parameters = Buffer.alloc(7);
         parameters.writeUint8(aFileId, 0);
         writeUint24LE(parameters, aOffset, 1);
         writeUint24LE(parameters, aLength, 4);
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.ReadData, parameters, commsEncrypted, true, true);
+        let [data, returnCode] = await this.communicate(this.constants.commands.ReadData, parameters);
         if (returnCode !== this.constants.status.success) {
-            throw new Error("Failed to read file contents (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+            throw new Error("Failed to read file contents [plain] (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
         return data;
     };
 
-    async writeData(aFileId, aData, commsCmac = false, commsEncrypted = false, aOffset = 0) {
+    async readDataCmac(aFileId, aOffset = 0, aLength = 0) {
+        let parameters = Buffer.alloc(7);
+        parameters.writeUint8(aFileId, 0);
+        writeUint24LE(parameters, aOffset, 1);
+        writeUint24LE(parameters, aLength, 4);
+        let [data, returnCode] = await this.communicate(this.constants.commands.ReadData, parameters, null, true, true);
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Failed to read file contents [cmac] (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
+        return data;
+    };
+
+    async readDataEncrypted(aFileId, aOffset = 0, aLength = 0) {
+        let parameters = Buffer.alloc(7);
+        parameters.writeUint8(aFileId, 0);
+        writeUint24LE(parameters, aOffset, 1);
+        writeUint24LE(parameters, aLength, 4);
+        let [data, returnCode] = await this.communicate(this.constants.commands.ReadData, parameters, null, true, false, true);
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Failed to read file contents [encrypted] (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
+        if (!this.verifyCrc(data, aLength)) {
+            throw new Error("Invalid CRC");
+        }
+        return data.slice(0,aLength);
+    };
+
+    async writeDataPlain(aFileId, aData, aOffset = 0) {
         let parameters = Buffer.alloc(7 + aData.length);
         parameters.writeUint8(aFileId, 0);
         writeUint24LE(parameters, aOffset, 1);
         writeUint24LE(parameters, aData.length, 4);
         aData.copy(parameters, 7);
-        let [data, returnCode] = await this.communicateOld(this.constants.commands.WriteData, parameters, commsEncrypted, true, true, commsCmac);
+        let [data, returnCode] = await this.communicate(this.constants.commands.WriteData, parameters, null, false, false);
         if (returnCode !== this.constants.status.success) {
-            throw new Error("Failed to write file contents (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+            throw new Error("Failed to write file contents [plain] (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
-        
-        console.log("DATA", data);
+    }
+
+    async writeDataCmac(aFileId, aData, aOffset = 0) {
+        let parameters = Buffer.alloc(7 + aData.length);
+        parameters.writeUint8(aFileId, 0);
+        writeUint24LE(parameters, aOffset, 1);
+        writeUint24LE(parameters, aData.length, 4);
+        aData.copy(parameters, 7);
+        let [data, returnCode] = await this.communicate(this.constants.commands.WriteData, parameters, null, true, true);
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Failed to write file contents [cmac] (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
+    }
+
+    async writeDataEncrypted(aFileId, aData, aOffset = 0) {
+        let parameters = Buffer.alloc(7);
+        parameters.writeUint8(aFileId, 0);
+        writeUint24LE(parameters, aOffset, 1);
+        writeUint24LE(parameters, aData.length, 4);
+        let [data, returnCode] = await this.communicate(this.constants.commands.WriteData, parameters, aData, false, true);
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Failed to write file contents [encrypted] (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
     }
 
     async getValue() {
@@ -979,8 +958,7 @@ class DesfireCard extends DesfireBase {
     }
 
     async ev1FreeMem() {
-        let [data, returnCode] = await this.communicateOld(
-            this.constants.commands.Ev1FreeMem, [], false, false);
+        let [data, returnCode] = await this.communicate(this.constants.commands.Ev1FreeMem);
         if (returnCode !== this.constants.status.success) {
             throw new Error("Failed to get free memory (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
@@ -997,8 +975,7 @@ class DesfireCard extends DesfireBase {
             throw new Error("Failed to get card UID (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
         if (!this.verifyCrc(data, 7)) {
-            //throw new Error("Invalid CRC");
-            console.log("INVALID CRC!!!");
+            throw new Error("Invalid CRC");
         }
         return data.slice(0,7);
     };

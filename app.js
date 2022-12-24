@@ -8,106 +8,108 @@ const nfc = new NFC();
 
 async function handleDesfireCard(desfire) {
     try {
+        console.log("CRC", desfire.crc32(Buffer.from([0xc4, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01])).toString(16));
+        //return;
 
         // This block of code functions as a test for some of the library functions
 
-        console.log(" > Select PICC application");
+        //console.log("Select PICC application");
         await desfire.selectApplication(0x000000); // Select PICC
 
-        console.log(" > Authenticate to PICC application with default DES key");
+        //console.log("Authenticate to PICC application with default DES key");
         await desfire.authenticateLegacy(0x00, desfire.default_des_key); // Authenticate using default key
 
-        console.log(" > Get card version");
+        /*console.log("Get card version");
         let version = await desfire.getVersion();
-        version.print();
+        version.print();*/
 
-        console.log(" > DES Get card UID");
+        /*console.log("DES Get card UID");
+        let uid = await desfire.ev1GetCardUid();
+        console.log("Card UID: ", uid);*/
+
+        //console.log("Format card");
+        await desfire.formatPicc();
+
+        //console.log("Create application");
+        desfire.createApplication(1234, desfire.constants.keySettings.factoryDefault, 2, desfire.constants.keyType.aes);
+
+        /*console.log("Read list of applications");
+        let applications = await desfire.getApplicationIdentifiers();
+        console.log("Applications: ", applications);*/
+        
+        //console.log("Select 1234 application");
+        await desfire.selectApplication(1234); 
+
+        //console.log("Authenticate to 1234 application with default AES key");
+        await desfire.ev1AuthenticateAes(0, desfire.default_aes_key);
+
+        console.log("AES Get card UID");
         let uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
 
-        console.log(" > Format card");
-        await desfire.formatPicc();
-
-        console.log(" > Create application");
-        desfire.createApplication(1234, desfire.constants.keySettings.factoryDefault, 2, desfire.constants.keyType.aes);
-
-        console.log(" > Read list of applications");
-        let applications = await desfire.getApplicationIdentifiers();
-        console.log("Applications: ", applications);
-        
-        console.log(" > Select 1234 application");
-        await desfire.selectApplication(1234); 
-
-        console.log(" > Authenticate to 1234 application with default AES key");
-        await desfire.ev1AuthenticateAes(0, desfire.default_aes_key);
-
-        console.log(" > AES Get card UID");
+        console.log("AES Get card UID");
         uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
 
-        console.log(" > AES Get card UID");
+        console.log("AES Get card UID");
         uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
 
-        console.log(" > AES Get card UID");
-        uid = await desfire.ev1GetCardUid();
-        console.log("Card UID: ", uid);
-
-        console.log(" > Get key settings");
+        console.log("Get key settings");
         console.log(await desfire.getKeySettings());
 
-        console.log(" > Get key version");
+        console.log("Get key version");
         let keyVersion = await desfire.getKeyVersion(0);
         console.log("Key version:", keyVersion);
 
-        console.log(" > Get card UID");
+        console.log("Get card UID");
         uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
 
-        console.log(" > Get card UID");
+        console.log("Get card UID");
         uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
 
-        console.log(" > Get card UID");
+        console.log("Get card UID");
         uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
 
-        console.log(" > Create file (plain)");
-        await desfire.createStandardDataFile(0, false, false, 0, 0, 0, 0, 32);
+        console.log("Create file (plain)");
+        await desfire.createStandardDataFile(0, false, false, 0, 0, 0, 0, 16);
 
-        console.log(" > Write data to file (plain)");
-        await desfire.writeData(0, Buffer.from("Hello plain text", "utf-8"), false, false, 0);
+        console.log("Write data to file (cmac)");
+        await desfire.writeDataCmac(0, Buffer.from("Hello world", "utf-8"), 0);
 
-        console.log(" > Read data from file (plain)");
-        let fileContents = await desfire.readData(0, false, false, 0, 16);
-        console.log("File contents:", fileContents);
+        console.log("Read data from file (cmac)");
+        let fileContents = await desfire.readDataCmac(0, 0, 16);
+        console.log("File contents:", fileContents.toString("utf-8"));
 
-        console.log(" > Create file (CMAC)");
-        await desfire.createStandardDataFile(1, true, false, 0, 0, 0, 0, 32);
+        console.log("Create file (encrypted)");
+        await desfire.createStandardDataFile(1, false, true, 0, 0, 0, 0, 16);
 
-        /*console.log(" > Write data to file (CMAC)");
-        await desfire.writeData(1, Buffer.from("Hello CMAC", "utf-8"), true, false, 0);
+        console.log("Write data to file (encrypted)");
+        await desfire.writeDataEncrypted(1, Buffer.from("Hello encrypted", "utf-8"), 0);
 
-        console.log(" > Read data from file (CMAC)");
-        let fileContents = await desfire.readData(0, false, false, 0, 16);
-        console.log("File contents:", fileContents);*/
+        console.log("Read data from file (encrypted)");
+        fileContents = await desfire.readDataEncrypted(1, 0, 16);
+        console.log("File contents:", fileContents.toString("utf-8"));
 
-        console.log(" > Get file identifiers");
+        console.log("Get file identifiers");
         let files = await desfire.getFileIdentifiers();
         console.log("Files: ", files);
 
-        console.log(" > Get card UID");
+        console.log("Get card UID");
         uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
         
-        console.log(" > Delete application");
+        console.log("Delete application");
         desfire.deleteApplication(1234);
 
-        console.log(" > Read list of applications");
-        applications = await desfire.getApplicationIdentifiers();
-        console.log("Applications: ", applications);
+        console.log("Read list of applications");
+        let applications2 = await desfire.getApplicationIdentifiers();
+        console.log("Applications: ", applications2);
 
-        console.log(" > Get free memory");
+        console.log("Get free memory");
         let freeMemory = await desfire.ev1FreeMem();
         console.log("Free memory: ", freeMemory, "bytes");
     } catch (error) {
