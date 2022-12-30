@@ -8,43 +8,40 @@ const nfc = new NFC();
 
 async function handleDesfireCard(desfire) {
     try {
-        console.log("CRC", desfire.crc32(Buffer.from([0xc4, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01])).toString(16));
-        //return;
-
         // This block of code functions as a test for some of the library functions
 
-        //console.log("Select PICC application");
+        console.log("Select PICC application");
         await desfire.selectApplication(0x000000); // Select PICC
 
-        //console.log("Authenticate to PICC application with default DES key");
+        console.log("Authenticate to PICC application with default DES key");
         await desfire.authenticateLegacy(0x00, desfire.default_des_key); // Authenticate using default key
 
-        /*console.log("Get card version");
+        console.log("Get card version");
         let version = await desfire.getVersion();
-        version.print();*/
+        version.print();
 
-        /*console.log("DES Get card UID");
+        console.log("DES Get card UID");
         let uid = await desfire.ev1GetCardUid();
-        console.log("Card UID: ", uid);*/
+        console.log("Card UID: ", uid);
 
-        //console.log("Format card");
+        console.log("Format card");
         await desfire.formatPicc();
 
-        //console.log("Create application");
-        desfire.createApplication(1234, desfire.constants.keySettings.factoryDefault, 2, desfire.constants.keyType.aes);
+        console.log("Create application");
+        desfire.createApplication(1234, desfire.constants.keySettings.factoryDefault, 2, desfire.constants.keyType.AES);
 
-        /*console.log("Read list of applications");
+        console.log("Read list of applications");
         let applications = await desfire.getApplicationIdentifiers();
-        console.log("Applications: ", applications);*/
-        
-        //console.log("Select 1234 application");
+        console.log("Applications: ", applications);
+
+        console.log("Select 1234 application");
         await desfire.selectApplication(1234); 
 
-        //console.log("Authenticate to 1234 application with default AES key");
+        console.log("Authenticate to 1234 application with default AES key");
         await desfire.ev1AuthenticateAes(0, desfire.default_aes_key);
 
         console.log("AES Get card UID");
-        let uid = await desfire.ev1GetCardUid();
+        uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
 
         console.log("AES Get card UID");
@@ -58,13 +55,37 @@ async function handleDesfireCard(desfire) {
         console.log("Get key settings");
         console.log(await desfire.getKeySettings());
 
-        console.log("Get key version");
+        /*console.log("Change key settings");
+        let settings = new DesfireKeySettings();
+        settings.allowCreateDeleteWithoutMk = false;
+        console.log(await desfire.changeKeySettings(settings));
+
+        console.log("Get key settings");
+        console.log(await desfire.getKeySettings());*/
+
+        console.log("Get key version (default key)");
         let keyVersion = await desfire.getKeyVersion(0);
+        console.log("Key version:", keyVersion);
+
+        let newAesKey = Buffer.from([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]);
+
+        console.log("Setting new AES key for 1234 application");
+        await desfire.changeKeyAes(42, 0, newAesKey);
+
+        console.log("Authenticate to 1234 application with new AES key");
+        await desfire.ev1AuthenticateAes(0, newAesKey);
+
+        console.log("Get key version (new key)");
+        keyVersion = await desfire.getKeyVersion(0);
         console.log("Key version:", keyVersion);
 
         console.log("Get card UID");
         uid = await desfire.ev1GetCardUid();
         console.log("Card UID: ", uid);
+
+        console.log("Setting new AES key for 1234 application key 1");
+        let otherNewAesKey = Buffer.from([16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]);
+        await desfire.changeKeyAes(42, 1, otherNewAesKey, desfire.default_aes_key);
 
         console.log("Get card UID");
         uid = await desfire.ev1GetCardUid();

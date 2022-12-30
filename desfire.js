@@ -131,9 +131,9 @@ class DesfireBase {
             },
             
             keyType: {
-                des: 0x00,
-                tripleDes: 0x40,
-                aes: 0x80
+                DES: 0x00,
+                TDES: 0x40,
+                AES: 0x80
             },
 
             fileType: {
@@ -416,7 +416,9 @@ class DesfireCardVersion extends DesfireBase {
 
 class DesfireKeySettings {
     constructor(buffer = Buffer.from([0x0F, 0x00])) {
-        //super();
+        if (buffer.length < 2) {
+            buffer = buffer.concat(Buffer.from([0x00]));
+        }
         let settings = buffer.readUint8(0);
         this.allowChangeMk              = Boolean(settings & 0x01);
         this.allowListingWithoutMk      = Boolean(settings & 0x02);
@@ -449,6 +451,10 @@ class DesfireKeySettings {
         let settings = (this.allowChangeWithKey << 4) | (this.allowChangeMk ? 1 : 0) | (this.allowListingWithoutMk ? 2 : 0) | (this.allowCreateDeleteWithoutMk ? 4 : 0) | (this.allowChangeConfiguration ? 8 : 0);
         return Buffer.from([settings, this.keyCount + _keyType]);
     }
+
+    getSettings() {
+        return this.getBuffer()[0];
+    }
 }
 
 class DesfireCard extends DesfireBase {
@@ -462,6 +468,7 @@ class DesfireCard extends DesfireBase {
         this.default_aes_key = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
         this.key = null;
+        this.appId = 0x000000;
     }
 
     // Helper functions
@@ -470,8 +477,7 @@ class DesfireCard extends DesfireBase {
         return Object.keys(object).find(key => object[key] === value);
     }
 
-    async communicate(cmd, data = [], encryptData = null, calculateTxCmac = false, checkRxCmac = false, decryptRxData = false, handleAdditionalFrames = true) {
-        //console.log("Communicate: ", cmd.toString(16), data);
+    async communicate(cmd, data = [], encryptData = null, calculateTxCmac = false, checkRxCmac = false, decryptRxData = false, handleAdditionalFrames = true, extraEncryptData = null) {
         if (((encryptData !== null) || calculateTxCmac || checkRxCmac || decryptRxData) && (this.key === null)) {
             throw Error("Not authenticated");
         }
@@ -493,6 +499,9 @@ class DesfireCard extends DesfireBase {
             let buffer = Buffer.alloc(encryptData.length + crcSize);
             encryptData.copy(buffer);
             buffer.writeUInt32LE(crc, encryptData.length);
+            if (extraEncryptData !== null) {
+                buffer = Buffer.concat([buffer, extraEncryptData]);
+            }
             let encryptedData = await this.padAndEncrypt(buffer);
             let combinedData = Buffer.alloc(plainData.length + encryptedData.length);
             plainData.copy(combinedData);
@@ -656,8 +665,16 @@ class DesfireCard extends DesfireBase {
         await this.key.authenticate(this);
     }
 
-    async changeKeySettings(newSettings) { // Encrypted command
-        throw new Error("not implemented");
+    async changeKeySettings(settings) {
+        if (!(settings instanceof DesfireKeySettings)) {
+            throw new Error("Expected settings to be a DesfireKeySettings object");
+        }
+        let parameters = Buffer.alloc(1);
+        parameters.writeUint8(settings.getSettings(), 0);
+        let [data, returnCode] = await this.communicate(this.constants.commands.ChangeKeySettings, [], parameters, false, true);
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Failed to change key settings (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
     }
 
     async getKeySettings() {
@@ -668,8 +685,65 @@ class DesfireCard extends DesfireBase {
         return new DesfireKeySettings(data);
     }
 
-    async changeKey(newSettings) { // Encrypted command
-        throw new Error("not implemented");
+    async changeKeyAes(keyVersion, newKeyId, newKey, oldKey = null) {
+        newKey = new DesfireKeyAes(newKeyId, newKey);
+
+        if (!(newKey instanceof DesfireKeyAes)) {
+            throw new Error("Expected the new key to be an AES key");
+        }
+
+        if (!(this.key instanceof DesfireKeyAes)) {
+            throw new Error("Expected the current key to be an AES key");
+        }
+
+        let keyNo = newKey.authenticationkeyIdentifier;
+
+        if (this.key.authenticationkeyIdentifier === keyNo) {
+            if (oldKey !== null) {
+                if (Buffer.compare(oldKey, this.key.authenticationKey) !== 0) {
+                    throw new Error("Different old key supplied while changing current key");
+                }
+                oldKey = new DesfireKeyAes(0, oldKey);
+            }
+        } else if (oldKey === null) {
+            throw new Error("Old key required when changing different key");
+        }
+
+        if (this.appId === 0x000000) { // Changing PICC master key
+            if (keyNo !== 0x00) {
+                throw new Error("When changing PICC master key only key 0 is valid");
+            }
+        } else if (keyNo > 0x0F) {
+            throw new Error("Key number out of range (0-15)");
+        }
+
+        let parameters = Buffer.alloc(1);
+        let keyNoAndType = keyNo;
+        if (this.appId === 0x000000) {
+            keyNoAndType |= this.constants.keyType.AES;
+        }
+        parameters.writeUint8(keyNoAndType, 0);
+
+        let encryptedParameters = Buffer.alloc(17);
+        newKey.authenticationKey.copy(encryptedParameters, 0);
+        encryptedParameters.writeUint8(keyVersion, 16);
+
+        if (this.key.authenticationkeyIdentifier !== keyNo) { // Changing diffent key
+            for (let byte = 0; byte < newKey.keyLength; byte++) { // XOR new key data with old key
+                encryptedParameters[byte] ^= oldKey.authenticationKey[byte];
+            }
+            let newKeyCrc = this.crc32(newKey.authenticationKey);
+            let newKeyCrcBuffer = Buffer.alloc(4);
+            newKeyCrcBuffer.writeUInt32LE(newKeyCrc);
+            var [data, returnCode] = await this.communicate(this.constants.commands.ChangeKey, parameters, encryptedParameters, false, true, false, false, newKeyCrcBuffer);
+        } else {
+            var [data, returnCode] = await this.communicate(this.constants.commands.ChangeKey, parameters, encryptedParameters, false, false);
+            this.key = null; // Currently authenticated key was changed, we are no longer authenticated
+        }
+
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("change key (AES) failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
     }
 
     async getKeyVersion(keyNo) {
@@ -732,6 +806,7 @@ class DesfireCard extends DesfireBase {
             throw new Error("Select application failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
         }
         this.key = null;
+        this.appId = appId;
     }
 
     async formatPicc() {
@@ -984,14 +1059,22 @@ class DesfireCard extends DesfireBase {
         throw new Error("Not implemented");
     }
 
-    async ev1SetConfiguration() { // Encrypted command
-        throw new Error("Not implemented");
-    }
-    
-    test(keyId, key) {
-        this.key = new DesfireKeyAes(keyId, key);
-        this.key.sessionKey = key;
-        this.key.clearIv(true);
+    async ev1SetConfiguration(permanentlyDisableCardFormatting, permanentlyEnableRandomUid) {
+        let parameters = Buffer.alloc(1);
+        parameters.writeUint8(0, 0);
+        let cardConfigBuffer = Buffer.alloc(1);
+        let cardConfig = 0;
+        if (permanentlyDisableCardFormatting) {
+            cardConfig |= (1 << 0);
+        }
+        if (permanentlyEnableRandomUid) {
+            cardConfig |= (1 << 1);
+        }
+        cardConfigBuffer.writeUint8(cardConfig, 0);
+        let [data, returnCode] = await this.communicate(this.constants.commands.Ev1SetConfiguration, parameters, cardConfigBuffer, false, true);
+        if (returnCode !== this.constants.status.success) {
+            throw new Error("Set configuration failed (" + this.getKeyByValue(this.constants.status, returnCode) + ")");
+        }
     }
 }
 
