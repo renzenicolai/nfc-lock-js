@@ -11,6 +11,7 @@
   "dependencies": {
     "@aapeli/nfc-pcsc": "^0.8.3",
     "@nicolaielectronics/desfire.js": "^0.0.2",
-    "serialport": "^10.5.0"
+    "onoff": "^6.0.3",
+    "sleep-promise": "^9.1.0"
   }
 }
