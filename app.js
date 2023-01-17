@@ -1,7 +1,6 @@
 "use strict";
 
 const fs = require('fs');
-const { SerialPort } = require('serialport');
 const { NFC, CONNECT_MODE_DIRECT } = require("@aapeli/nfc-pcsc");
 const { DesfireCard, DesfireKeySettings } = require("@nicolaielectronics/desfire.js");
 const Atr = require("./parseAtr.js");
