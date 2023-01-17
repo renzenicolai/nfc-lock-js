@@ -11,13 +11,13 @@ let database = JSON.parse(fs.readFileSync('nfc.json'));
 
 /* Pi GPIO for solenoid */
 var Gpio = require('onoff').Gpio; //include onoff to interact with the GPIO
-var Solenoid = new Gpio(4, 'out'); //use GPIO pin 4, and specify that it is out
+var Solenoid = new Gpio(23, 'out'); //use GPIO pin 4, and specify that it is out
 Solenoid.writeSync(0); // initialise it low (upon boot will be floating unless pulled down)
 const sleep = require('sleep-promise');
 
 async function openDoor() {
     Solenoid.writeSync(1); // open lock
-    await sleep(5000); // Wait 5000 ms
+    await sleep(2000); // Wait 2000 ms
     Solenoid.writeSync(0); // close lock
 }
 
