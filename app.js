@@ -1,7 +1,6 @@
 "use strict";
 
 const fs = require('fs');
-const { SerialPort } = require('serialport');
 const { NFC, CONNECT_MODE_DIRECT } = require("@aapeli/nfc-pcsc");
 const { DesfireCard, DesfireKeySettings } = require("@nicolaielectronics/desfire.js");
 const Atr = require("./parseAtr.js");
@@ -10,72 +9,16 @@ const nfc = new NFC();
 
 let database = JSON.parse(fs.readFileSync('nfc.json'));
 
-/* iButton lock */
+/* Pi GPIO for solenoid */
+var Gpio = require('onoff').Gpio; //include onoff to interact with the GPIO
+var Solenoid = new Gpio(23, 'out'); //use GPIO pin 4, and specify that it is out
+Solenoid.writeSync(0); // initialise it low (upon boot will be floating unless pulled down)
+const sleep = require('sleep-promise');
 
-let legacy_database = JSON.parse(fs.readFileSync('database.json'));
-const port = new SerialPort({ path: '/dev/ttyUSB1', baudRate: 115200 });
-
-let rxBuffer = Buffer.from([]);
-
-port.on('data', (data) => {
-  rxBuffer = Buffer.concat([rxBuffer, data]);
-  processRxBuffer();
-});
-
-function processRxBuffer() {
-  while (true) {
-    let endOfLine = rxBuffer.indexOf('\n');
-    if (endOfLine < 0) {
-      break; // No complete lines in the buffer
-    }
-    let line = rxBuffer.slice(0,endOfLine + 1).toString('ascii').replace('\n','').replace('\r','');
-    rxBuffer = rxBuffer.slice(endOfLine + 1);
-    processRxLine(line);
-  }
-}
-
-function processRxLine(line) {
-  if (line.startsWith('#')) {
-    console.log("Legacy: received debug message", line);
-  } else if (line.startsWith('{') && line.endsWith('}')) {
-    let cmd = line.substring(1, line.length - 1);
-    if (cmd === "doorisopen") {
-      console.log("Door state changed: OPEN");
-    } else if (cmd === "doorisclosed") {
-      console.log("Door state changed: CLOSED");
-    } else if (cmd.startsWith("query[")) {
-      let id = cmd.substring(6, cmd.length - 1).toLowerCase();
-      processIbutton(id);
-    } else {
-      console.log("Legacy: received unhandled command", cmd);
-    }
-  } else {
-    console.log("Legacy: received garbage data", line);
-  }
-}
-
-let isBusy = false;
-
-function processIbutton(id) {
-  if (isBusy) {
-    console.log("iButton ignored, lock is busy");
-    return;
-  }
-  console.log("iButton presented: '" + id + "'");
-  isBusy = true;
-  if (id in legacy_database) {
-    console.log("iButton in database! '" + id + "'");
-    openDoor();
-  } else {
-    console.log("iButton not in database! '" + id + "'");
-  }
-  setTimeout(() => {
-    isBusy = false;
-  }, 2000);
-}
-
-function openDoor() {
-  port.write("{openthedoor}");
+async function openDoor() {
+    Solenoid.writeSync(1); // open lock
+    await sleep(2000); // Wait 2000 ms
+    Solenoid.writeSync(0); // close lock
 }
 
 /* NFC lock */
