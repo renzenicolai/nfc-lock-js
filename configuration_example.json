@@ -14,5 +14,9 @@
         "username": "user",
         "password": "password"
     },
-    "database": "database.json"
+    "database": "database.json",
+    "mqtt": {
+        "server": "mqtt://example.com",
+        "topic": "example_topic"
+    }
 }

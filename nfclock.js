@@ -62,10 +62,11 @@ class NfcReader {
 }
 
 class NfcLock {
-    constructor(configuration, database, hardware) {
+    constructor(configuration, database, hardware, mqtt) {
         this.configuration = configuration;
         this.database = database;
         this.hardware = hardware;
+        this.mqtt = mqtt;
         this.nfc = new NFC();
 
         this.readers = {};
@@ -76,10 +77,18 @@ class NfcLock {
             }
             this.readers[reader.name] = new NfcReader(reader, this._onReaderEnd.bind(this));
             console.log("Reader attached:", reader.name);
+            this.mqtt.publish({
+                type: "reader_attached",
+                name: reader.name
+            });
         });
         
         this.nfc.on("error", (err) => {
             console.error("NFC error", err);
+            this.mqtt.publish({
+                type: "nfc_error",
+                reason: err
+            });
         });
     }
 
@@ -88,6 +97,10 @@ class NfcLock {
             let database = this.database.get();
             if (!(desfire.uid in database)) {
                 console.error("UID not found in database");
+                this.mqtt.publish({
+                    type: "denied",
+                    reason: "identifier not in database",
+                });
                 return;
             }
     
@@ -101,22 +114,43 @@ class NfcLock {
     
             if (Buffer.compare(secret, secretOnCard) !== 0) {
                 console.error("Secret on card is invalid");
+                this.mqtt.publish({
+                    type: "denied",
+                    reason: "invalid secret",
+                    owner: database[desfire.uid]['owner'],
+                    name: database[desfire.uid]['name'],
+                });
                 return;
             }
             
             console.log("Found valid Desfire key, owner is '", database[desfire.uid]['owner'], "'. Opening door...");
             this.hardware.openDoor();
+            this.mqtt.publish({
+                type: "access",
+                reason: "valid key",
+                owner: database[desfire.uid]['owner'],
+                name: database[desfire.uid]['name'],
+            });
     
             //let nameOnCard = await desfire.readDataEncrypted(2, 0, 16);
             //console.log("Card is verified!", nameOnCard.toString('ascii'));
         } catch (error) {
             console.error("Failed to authenticate card", error);
+            this.mqtt.publish({
+                type: "denied",
+                reason: "error",
+                error: error
+            });
         }
     }
     
     _onReaderEnd(nfcReader, name) {
         console.log("Reader removed:", name);
         delete this.readers[name];
+        this.mqtt.publish({
+            type: "reader_detached",
+            name: name
+        });
     }
 }
 
