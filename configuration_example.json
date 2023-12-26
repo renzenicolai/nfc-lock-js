@@ -1,0 +1,18 @@
+{
+    "hardware": {
+        "duration": 2000,
+        "interval": 2000,
+        "gpio": {
+            "solenoid": 25,
+            "sensor_power": 23,
+            "sensor_state": 24
+        }
+    },
+    "spacecore": {
+        "server": "https://example.com/api/",
+        "interval": 30000,
+        "username": "user",
+        "password": "password"
+    },
+    "database": "database.json"
+}
