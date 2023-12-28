@@ -21,7 +21,8 @@ class Spacecore {
         this.password = this.configuration.get("spacecore", "password");
 
         if (this.server !== null) {
-            this._loop();
+            this.apiClient.connect();
+            this.loopTimer = setTimeout(this._loop.bind(this), this.interval);
         } else {
             console.error("Warning: no Spacecore server configured, database synchronization disabled");
         }
@@ -126,8 +127,7 @@ class Spacecore {
         }
         this.database.set(database);
         this.database.store();
-
-        console.log("Database synchronized with Spacecore, " + Object.keys(database).length + " keys in database");
+        //console.log("Database synchronized with Spacecore, " + Object.keys(database).length + " keys in database");
     }
 }
 

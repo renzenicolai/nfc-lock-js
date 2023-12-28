@@ -141,14 +141,10 @@ class ApiClient {
         clearTimeout(this.pingRequestTimeout);
         this.pingRequestTimeout = setTimeout(this._ping.bind(this), 2000);
         if (error) {
-            if (error.code === -32001) {
-                console.error("Session token is invalid", error);
-                this.token = null; // Session is invalid
-                this._storeCookie({"session": null});
-                this.session = null;
-                if ((this.session) && (typeof this.onSession === "function")) {
-                    this.onSession(null);
-                }
+            this.token = null; // Session is invalid
+            this.session = null;
+            if ((this.session) && (typeof this.onSession === "function")) {
+                this.onSession(null);
             }
         }
         if (result) {

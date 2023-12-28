@@ -7,6 +7,8 @@ class Mqtt {
         this.configuration = configuration;
         this.server = configuration.get("mqtt", "server");
         this.topic = configuration.get("mqtt", "topic");
+        this.reconnectPeriod = configuration.get("mqtt", "reconnectPeriod") || 2000;
+        this.connectTimeout = configuration.get("mqtt", "connectTimeout") || 30000;
         this.client = null;
 
         if (this.server !== null && this.topic !== null) {
@@ -18,7 +20,10 @@ class Mqtt {
 
     async _connect() {
         try {
-            this.client = await mqtt.connectAsync(this.server);
+            this.client = await mqtt.connectAsync(this.server, {
+                reconnectPeriod: this.reconnectPeriod,
+                connectTimeout: this.connectTimeout
+            });
 
             console.log("Connected to MQTT server");
             this.publish({
