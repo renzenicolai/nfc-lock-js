@@ -5,11 +5,12 @@ const { DesfireCard, DesfireKeySettings } = require("@nicolaielectronics/desfire
 const Atr = require("./parseAtr.js");
 
 class NfcReader {
-    constructor(reader, onEnd) {
+    constructor(reader, onEnd, checkCard) {
         this.androidAtr    = Buffer.from([0x3b, 0x80, 0x80, 0x01, 0x01]);
         this.tlvAtr        = Buffer.from([0x3b, 0x8d, 0x80, 0x01, 0x80]);
         this._reader = reader;
         this._onEnd = onEnd;
+        this._checkCard = checkCard;
         this._reader.autoProcessing = false;
         this._reader.on("end", () => {
             if (typeof this._onEnd === "function") {
@@ -39,7 +40,7 @@ class NfcReader {
                 this.card = new DesfireCard(this._reader, card);
                 await this.card.getUid();
                 console.log(this._reader.name + ": Desfire card " + this.card.uid + " attached");
-                checkCard(this.card);
+                this._checkCard(this.card);
             } else {
                 this._reader.aid = 'D2760000850101'; // NDEF
                 this._reader.handleTag(); // This executes the card event again!
@@ -75,7 +76,7 @@ class NfcLock {
             if (reader.name in this.readers) {
                 console.error("Error: reader attached but already registered", reader.name);
             }
-            this.readers[reader.name] = new NfcReader(reader, this._onReaderEnd.bind(this));
+            this.readers[reader.name] = new NfcReader(reader, this._onReaderEnd.bind(this), this.checkCard.bind(this));
             console.log("Reader attached:", reader.name);
             this.mqtt.publish({
                 type: "reader_attached",
@@ -123,7 +124,7 @@ class NfcLock {
                 return;
             }
             
-            console.log("Found valid Desfire key, owner is '", database[desfire.uid]['owner'], "'. Opening door...");
+            console.log("Found valid Desfire key, owner is '" + database[desfire.uid]['owner'] + "'. Opening door...");
             this.hardware.openDoor();
             this.mqtt.publish({
                 type: "access",

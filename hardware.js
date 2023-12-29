@@ -62,7 +62,7 @@ class Hardware {
 
     _sensorLoop() {
         if (this.gpio_handle_sensor_power !== null) {
-            let power = this.gpio_handle_sensor_power.readSync();
+            let power = !this.gpio_handle_sensor_power.readSync();
             if (power !== this.previous_power) {
                 this.previous_power = power;
                 if (typeof this.power_callback === "function") {
@@ -72,10 +72,11 @@ class Hardware {
         }
 
         if (this.gpio_handle_sensor_state !== null) {
-            let state = this.gpio_handle_sensor_state.readSync();
+            let state = !this.gpio_handle_sensor_state.readSync();
             if (state !== this.previous_state) {
+                this.previous_state = state;
                 if (typeof this.state_callback === "function") {
-                    this.state_callback(power);
+                    this.state_callback(state);
                 }
             }
         }

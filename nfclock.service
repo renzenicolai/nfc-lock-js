@@ -1,0 +1,10 @@
+[Unit]
+Description=NFC lock
+
+[Service]
+User=renze
+ExecStart=/home/renze/nfc-lock-js/start.sh
+WorkingDirectory=/home/renze/gpiolock
+
+[Install]
+WantedBy=multi-user.target

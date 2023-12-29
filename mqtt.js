@@ -20,7 +20,7 @@ class Mqtt {
 
     async _connect() {
         try {
-            this.client = await mqtt.connectAsync(this.server, {
+            this.client = await mqtt.connect(this.server, {
                 reconnectPeriod: this.reconnectPeriod,
                 connectTimeout: this.connectTimeout
             });
@@ -37,7 +37,7 @@ class Mqtt {
     async publish(information) {
         try {
             if (this.topic !== null && this.client) {
-                await this.client.publishAsync(this.topic, JSON.stringify(information));
+                await this.client.publish(this.topic, JSON.stringify(information));
             }
         } catch (error) {
             console.error("Error: failed to publish to MQTT", error);

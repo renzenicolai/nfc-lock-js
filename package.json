@@ -11,7 +11,7 @@
   "dependencies": {
     "@aapeli/nfc-pcsc": "^0.8.3",
     "@nicolaielectronics/desfire.js": "^0.0.2",
-    "mqtt": "^5.3.4",
+    "mqtt": "^4.3.7",
     "nicolai-configuration": "^1.0.0",
     "onoff": "^6.0.3",
     "sleep-promise": "^9.1.0",
