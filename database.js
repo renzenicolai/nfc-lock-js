@@ -6,7 +6,7 @@ class Database {
     constructor(configuration) {
         this.configuration = configuration;
         this.filename = configuration.get("database");
-        this.database = [];
+        this.database = {};
 
         this.load();
     }
