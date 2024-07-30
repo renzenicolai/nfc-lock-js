@@ -57,3 +57,5 @@ CHANNELID         0
 ```
 
 The service file `ifdnfc.service` can be used to automatically start the service using systemd. Copy this file to `/etc/systemd/system/ifdnfc.service` then run `sudo systemctl enable --now ifdnfc` to start. Be sure to change the username in the service file to something that suits your system.
+
+Also enable pcscd with `sudo systemctl enable --now pcscd`
